@@ -1,0 +1,26 @@
+{
+  "name": "whatsapp-api-n8nv2",
+  "version": "1.0.0",
+  "description": "WhatsApp API Gateway",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "latest",
+    "dotenv": "^17.2.3",
+    "express": "^4.18.2",
+    "express-validator": "^7.3.1",
+    "ldapjs": "^3.0.7",
+    "multer": "^2.0.2",
+    "pino": "^8.16.1",
+    "qrcode": "^1.5.3",
+    "socket.io": "^4.7.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}
