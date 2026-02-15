@@ -14,6 +14,19 @@ export type N8nAttachment = {
   ptt: boolean | null;
   dataBase64: string | null;
   error: string | null;
+  isQuoted?: boolean;
+  source?: 'direct' | 'quoted';
+  quotedFrom?: string;
+  quotedMessageId?: string | null;
+};
+
+export type N8nQuotedMessage = {
+  type: 'text' | 'extended_text' | 'image' | 'video' | 'audio' | 'document' | 'unknown';
+  text: string;
+  participant: string;
+  messageId: string | null;
+  mediaInfo: N8nAttachment | null;
+  raw: unknown;
 };
 
 export type N8nAdUser = {
@@ -45,6 +58,7 @@ type N8nPayload = {
   media?: N8nAttachment | null;
   messageType?: string | null;
   mentionedJids?: string[];
+  quotedMessage?: N8nQuotedMessage | null;
   botNumber?: string | null;
   botLid?: string | null;
   shouldReply?: boolean;

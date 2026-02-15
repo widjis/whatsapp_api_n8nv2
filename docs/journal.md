@@ -389,3 +389,8 @@
   - Added LDAP phone-number lookup with pushName fallback and cached results.
   - Forwarded `adUser` into n8n payload for identity-aware workflows.
   - Enabled log-only mode for untagged group messages (`shouldReply=false`) while still sending to n8n.
+
+## [2026-02-15 20:19:14 WITA] Port legacy quoted-message payload and quoted media fallback
+- Change:
+  - Added quoted message extraction from `contextInfo` and forwarded as `quotedMessage` to n8n.
+  - Added quoted media download (image/video/audio) and media fallback when no direct attachment.

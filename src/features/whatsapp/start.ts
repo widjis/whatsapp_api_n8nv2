@@ -14,7 +14,7 @@ import type { WASocket, proto, WAMessage } from '@whiskeysockets/baileys';
 import type { Server as SocketIoServer } from 'socket.io';
 import type { InMemoryStore } from './store.js';
 import { resolveSenderNumber } from './utils.js';
-import { handleN8nIntegration, type N8nAttachment } from '../integrations/n8n.js';
+import { handleN8nIntegration, type N8nAttachment, type N8nQuotedMessage } from '../integrations/n8n.js';
 import {
   findAdUserByPhone,
   findUsersByCommonName,
@@ -78,6 +78,7 @@ type BufferedMessage = {
   shouldReply: boolean;
   messageType: ParsedIncomingMessage['messageType'];
   mentionedJids: string[];
+  quotedMessage: N8nQuotedMessage | null;
 };
 
 type MessageBuffer = {
@@ -242,6 +243,7 @@ async function flushMessageBuffer(key: string): Promise<void> {
     attachments: combinedAttachments,
     messageType: first.messageType,
     mentionedJids: combinedMentionedJids,
+    quotedMessage: first.quotedMessage,
     shouldReply: first.shouldReply,
     deps,
   });
@@ -454,6 +456,7 @@ type ParsedIncomingMessage = {
   attachments: N8nAttachment[];
   messageType: 'text' | 'extended_text' | 'image' | 'video' | 'audio' | 'document' | 'unknown';
   mentionedJids: string[];
+  quotedMessage: N8nQuotedMessage | null;
 };
 
 function isNotifyUpsertPayload(
@@ -905,17 +908,140 @@ function isTaggedInGroup(args: {
 }
 
 async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessageInfo }): Promise<ParsedIncomingMessage> {
-  if (!args.msg.key) return { text: '', attachments: [], messageType: 'unknown', mentionedJids: [] };
+  if (!args.msg.key) return { text: '', attachments: [], messageType: 'unknown', mentionedJids: [], quotedMessage: null };
   const rawMessage = unwrapEphemeralMessage(args.msg.message);
-  if (!rawMessage) return { text: '', attachments: [], messageType: 'unknown', mentionedJids: [] };
+  if (!rawMessage) return { text: '', attachments: [], messageType: 'unknown', mentionedJids: [], quotedMessage: null };
 
   const mentionedJids = extractMentionedJids(rawMessage);
 
-  if (rawMessage.conversation) return { text: rawMessage.conversation, attachments: [], messageType: 'text', mentionedJids };
+  const contextInfo =
+    rawMessage.extendedTextMessage?.contextInfo ??
+    rawMessage.imageMessage?.contextInfo ??
+    rawMessage.videoMessage?.contextInfo ??
+    rawMessage.audioMessage?.contextInfo ??
+    rawMessage.documentMessage?.contextInfo;
+
+  async function parseQuotedMessage(): Promise<N8nQuotedMessage | null> {
+    const quotedRaw = contextInfo?.quotedMessage;
+    if (!quotedRaw) return null;
+
+    const actualQuoted = unwrapEphemeralMessage(quotedRaw) ?? quotedRaw;
+
+    async function downloadBase64FromMessage(message: proto.IMessage): Promise<string | null> {
+      try {
+        const msgForDownload = { key: args.msg.key, message } as unknown as WAMessage;
+        const downloaded = await downloadMediaMessage(msgForDownload, 'buffer', {}, {
+          logger: mediaLogger,
+          reuploadRequest: args.sock.updateMediaMessage,
+        });
+        const buffer = Buffer.isBuffer(downloaded) ? downloaded : Buffer.from(downloaded as Uint8Array);
+        return buffer.toString('base64');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('Error downloading quoted media:', message);
+        return null;
+      }
+    }
+
+    let quotedText = '';
+    let quotedType: N8nQuotedMessage['type'] = 'unknown';
+    let quotedMediaInfo: N8nAttachment | null = null;
+
+    if (actualQuoted.conversation) {
+      quotedText = actualQuoted.conversation;
+      quotedType = 'text';
+    } else if (actualQuoted.extendedTextMessage?.text) {
+      quotedText = actualQuoted.extendedTextMessage.text;
+      quotedType = 'extended_text';
+    } else if (actualQuoted.imageMessage) {
+      quotedText = actualQuoted.imageMessage.caption || 'Image';
+      quotedType = 'image';
+      const dataBase64 = await downloadBase64FromMessage({ imageMessage: actualQuoted.imageMessage });
+      quotedMediaInfo = {
+        type: 'image',
+        caption: actualQuoted.imageMessage.caption ?? '',
+        mimetype: actualQuoted.imageMessage.mimetype ?? 'image/jpeg',
+        fileLength: Number(actualQuoted.imageMessage.fileLength ?? 0),
+        fileName: null,
+        seconds: null,
+        width: Number(actualQuoted.imageMessage.width ?? 0) || null,
+        height: Number(actualQuoted.imageMessage.height ?? 0) || null,
+        ptt: null,
+        dataBase64,
+        error: dataBase64 ? null : 'Failed to download quoted image',
+      };
+    } else if (actualQuoted.videoMessage) {
+      quotedText = actualQuoted.videoMessage.caption || 'Video';
+      quotedType = 'video';
+      const dataBase64 = await downloadBase64FromMessage({ videoMessage: actualQuoted.videoMessage });
+      quotedMediaInfo = {
+        type: 'video',
+        caption: actualQuoted.videoMessage.caption ?? '',
+        mimetype: actualQuoted.videoMessage.mimetype ?? 'video/mp4',
+        fileLength: Number(actualQuoted.videoMessage.fileLength ?? 0),
+        fileName: null,
+        seconds: Number(actualQuoted.videoMessage.seconds ?? 0) || null,
+        width: Number(actualQuoted.videoMessage.width ?? 0) || null,
+        height: Number(actualQuoted.videoMessage.height ?? 0) || null,
+        ptt: null,
+        dataBase64,
+        error: dataBase64 ? null : 'Failed to download quoted video',
+      };
+    } else if (actualQuoted.audioMessage) {
+      quotedText = actualQuoted.audioMessage.ptt ? 'Voice message' : 'Audio';
+      quotedType = 'audio';
+      const dataBase64 = await downloadBase64FromMessage({ audioMessage: actualQuoted.audioMessage });
+      quotedMediaInfo = {
+        type: 'audio',
+        caption: '',
+        mimetype: actualQuoted.audioMessage.mimetype ?? 'audio/ogg',
+        fileLength: Number(actualQuoted.audioMessage.fileLength ?? 0),
+        fileName: null,
+        seconds: Number(actualQuoted.audioMessage.seconds ?? 0) || null,
+        width: null,
+        height: null,
+        ptt: Boolean(actualQuoted.audioMessage.ptt),
+        dataBase64,
+        error: dataBase64 ? null : 'Failed to download quoted audio',
+      };
+    } else if (actualQuoted.documentMessage) {
+      quotedText = actualQuoted.documentMessage.caption || actualQuoted.documentMessage.fileName || 'Document';
+      quotedType = 'document';
+      quotedMediaInfo = {
+        type: 'document',
+        caption: actualQuoted.documentMessage.caption ?? '',
+        mimetype: actualQuoted.documentMessage.mimetype ?? 'application/octet-stream',
+        fileLength: Number(actualQuoted.documentMessage.fileLength ?? 0),
+        fileName: actualQuoted.documentMessage.fileName ?? null,
+        seconds: null,
+        width: null,
+        height: null,
+        ptt: null,
+        dataBase64: null,
+        error: null,
+      };
+    }
+
+    const participant = typeof contextInfo?.participant === 'string' && contextInfo.participant.length > 0 ? contextInfo.participant : 'Unknown';
+    const messageId = typeof contextInfo?.stanzaId === 'string' && contextInfo.stanzaId.length > 0 ? contextInfo.stanzaId : null;
+
+    return {
+      type: quotedType,
+      text: quotedText,
+      participant,
+      messageId,
+      mediaInfo: quotedMediaInfo,
+      raw: quotedRaw,
+    };
+  }
+
+  const quotedMessage = await parseQuotedMessage();
+
+  if (rawMessage.conversation) return { text: rawMessage.conversation, attachments: [], messageType: 'text', mentionedJids, quotedMessage };
   if (rawMessage.extendedTextMessage?.text)
-    return { text: rawMessage.extendedTextMessage.text, attachments: [], messageType: 'extended_text', mentionedJids };
+    return { text: rawMessage.extendedTextMessage.text, attachments: [], messageType: 'extended_text', mentionedJids, quotedMessage };
   if (rawMessage.buttonsResponseMessage?.selectedButtonId) {
-    return { text: rawMessage.buttonsResponseMessage.selectedButtonId, attachments: [], messageType: 'unknown', mentionedJids };
+    return { text: rawMessage.buttonsResponseMessage.selectedButtonId, attachments: [], messageType: 'unknown', mentionedJids, quotedMessage };
   }
   if (rawMessage.listResponseMessage?.singleSelectReply?.selectedRowId) {
     return {
@@ -923,10 +1049,11 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       attachments: [],
       messageType: 'unknown',
       mentionedJids,
+      quotedMessage,
     };
   }
   if (rawMessage.templateButtonReplyMessage?.selectedId) {
-    return { text: rawMessage.templateButtonReplyMessage.selectedId, attachments: [], messageType: 'unknown', mentionedJids };
+    return { text: rawMessage.templateButtonReplyMessage.selectedId, attachments: [], messageType: 'unknown', mentionedJids, quotedMessage };
   }
 
   const msgForDownload: WAMessage = { ...args.msg, key: args.msg.key, message: rawMessage };
@@ -962,7 +1089,7 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       dataBase64,
       error: dataBase64 ? null : 'Failed to download image',
     };
-    return { text: caption || 'Image message received', attachments: [attachment], messageType: 'image', mentionedJids };
+    return { text: caption || 'Image message received', attachments: [attachment], messageType: 'image', mentionedJids, quotedMessage };
   }
 
   if (rawMessage.videoMessage) {
@@ -981,7 +1108,7 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       dataBase64,
       error: dataBase64 ? null : 'Failed to download video',
     };
-    return { text: caption || 'Video message received', attachments: [attachment], messageType: 'video', mentionedJids };
+    return { text: caption || 'Video message received', attachments: [attachment], messageType: 'video', mentionedJids, quotedMessage };
   }
 
   if (rawMessage.audioMessage) {
@@ -1005,6 +1132,7 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       attachments: [attachment],
       messageType: 'audio',
       mentionedJids,
+      quotedMessage,
     };
   }
 
@@ -1025,10 +1153,10 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       error: dataBase64 ? null : 'Failed to download document',
     };
     const fallbackText = attachment.fileName ? `Document: ${attachment.fileName}` : 'Document message received';
-    return { text: caption || fallbackText, attachments: [attachment], messageType: 'document', mentionedJids };
+    return { text: caption || fallbackText, attachments: [attachment], messageType: 'document', mentionedJids, quotedMessage };
   }
 
-  return { text: 'Media/Other', attachments: [], messageType: 'unknown', mentionedJids };
+  return { text: 'Media/Other', attachments: [], messageType: 'unknown', mentionedJids, quotedMessage };
 }
 
 function pickReactionSenderFromUpsertMessage(args: {
@@ -1147,6 +1275,7 @@ async function handleMessage(args: {
   attachments: N8nAttachment[];
   messageType?: string;
   mentionedJids?: string[];
+  quotedMessage?: N8nQuotedMessage | null;
   shouldReply?: boolean;
   deps: StartWhatsAppDeps;
 }): Promise<void> {
@@ -1167,6 +1296,20 @@ async function handleMessage(args: {
 
   const adUser = await resolveAdUser({ senderDigits, senderJid: senderNumber, pushName });
 
+  const directMediaInfo = attachments[0] ? { ...attachments[0], isQuoted: false, source: 'direct' as const } : null;
+  const quotedMediaInfo = args.quotedMessage?.mediaInfo
+    ? {
+        ...args.quotedMessage.mediaInfo,
+        isQuoted: true,
+        source: 'quoted' as const,
+        quotedFrom: args.quotedMessage.participant,
+        quotedMessageId: args.quotedMessage.messageId,
+      }
+    : null;
+  const media = directMediaInfo ?? quotedMediaInfo;
+  const hasAttachment = Boolean(media);
+  const attachmentType = media?.type ?? null;
+
   await handleN8nIntegration({
     sock,
     remoteJid,
@@ -1182,12 +1325,13 @@ async function handleMessage(args: {
       messageId: msg.key?.id,
       attachments: attachments.length > 0 ? attachments : undefined,
       attachmentCount: attachments.length,
-      hasAttachment: attachments.length > 0,
-      attachmentType: attachments[0]?.type ?? null,
-      mediaInfo: attachments[0] ?? null,
-      media: attachments[0] ?? null,
+      hasAttachment,
+      attachmentType,
+      mediaInfo: directMediaInfo,
+      media,
       messageType: args.messageType ?? null,
       mentionedJids: args.mentionedJids ?? [],
+      quotedMessage: args.quotedMessage ?? null,
       botNumber,
       botLid: null,
       shouldReply,
@@ -1662,6 +1806,7 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
           shouldReply,
           messageType: parsed.messageType,
           mentionedJids: parsed.mentionedJids,
+          quotedMessage: parsed.quotedMessage,
         });
 
         if (buffered) continue;
@@ -1674,6 +1819,7 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
           attachments: parsed.attachments,
           messageType: parsed.messageType,
           mentionedJids: parsed.mentionedJids,
+          quotedMessage: parsed.quotedMessage,
           shouldReply,
           deps,
         });
