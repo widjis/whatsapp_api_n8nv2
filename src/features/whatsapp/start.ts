@@ -329,6 +329,9 @@ async function handleTicketReactionClaim(args: {
   messageId: string;
   participantRaw: string;
 }): Promise<void> {
+  const sockUserJid = args.sock.user?.id;
+  const sockDigits = typeof sockUserJid === 'string' ? extractPhoneDigitsFromJid(sockUserJid) : null;
+
   const participantJid = resolveParticipantJid({
     participant: args.participantRaw,
     store: args.deps.store,
@@ -336,6 +339,8 @@ async function handleTicketReactionClaim(args: {
   });
   const digits = extractPhoneDigitsFromJid(participantJid);
   if (!digits) return;
+
+  if (sockDigits && digits === sockDigits) return;
 
   const reacterPhone = normalizeTechnicianPhoneNumber(digits);
   const tech = getContactByPhone(reacterPhone);
@@ -455,25 +460,45 @@ function resolveParticipantJid(args: { participant: string; store: InMemoryStore
 }
 
 function extractPhoneDigitsFromJid(jid: string): string | null {
-  const match = jid.match(/(\d+)@s\.whatsapp\.net/);
+  const match = jid.match(/(\d+)(?::\d+)?@s\.whatsapp\.net/);
   return match?.[1] ?? null;
 }
 
-function pickReactionSenderFromUpsertMessage(msg: proto.IWebMessageInfo, currentSock: WASocket): string | null {
+function pickReactionSenderFromUpsertMessage(args: {
+  msg: proto.IWebMessageInfo;
+  currentSock: WASocket;
+  deps: StartWhatsAppDeps;
+}): string | null {
+  const msg = args.msg;
   const viaKey = typeof msg.key?.participant === 'string' && msg.key.participant ? msg.key.participant : undefined;
   const viaTopLevel =
     typeof (msg as unknown as { participant?: unknown }).participant === 'string'
       ? ((msg as unknown as { participant?: string }).participant ?? undefined)
       : undefined;
 
-  const sockUserJid = currentSock.user?.id;
+  const sockUserJid = args.currentSock.user?.id;
   const sockDigits = typeof sockUserJid === 'string' ? extractPhoneDigitsFromJid(sockUserJid) : null;
 
   const candidates = [viaTopLevel, viaKey].filter((v): v is string => typeof v === 'string' && v.length > 0);
   for (const candidate of candidates) {
-    const digits = extractPhoneDigitsFromJid(candidate);
+    const resolved = resolveParticipantJid({
+      participant: candidate,
+      store: args.deps.store,
+      authInfoDir: args.deps.authInfoDir,
+    });
+    const digits = extractPhoneDigitsFromJid(resolved);
     if (sockDigits && digits && digits === sockDigits) continue;
     return candidate;
+  }
+
+  if (
+    sockDigits &&
+    candidates.some((c) => {
+      const resolved = resolveParticipantJid({ participant: c, store: args.deps.store, authInfoDir: args.deps.authInfoDir });
+      return extractPhoneDigitsFromJid(resolved) === sockDigits;
+    })
+  ) {
+    return null;
   }
 
   return candidates[0] ?? null;
@@ -985,7 +1010,7 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
         const reactionTarget = extractReactionTargetFromMessage(msg.message);
         if (reactionTarget?.messageId) {
           if (allowedReactionGroups.has(remoteJid)) {
-            const participantRaw = pickReactionSenderFromUpsertMessage(msg, currentSock);
+            const participantRaw = pickReactionSenderFromUpsertMessage({ msg, currentSock, deps });
             if (participantRaw) {
               await handleTicketReactionClaim({
                 sock: currentSock,
@@ -1024,6 +1049,9 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
     const currentSock = sock;
     if (!currentSock) return;
 
+    const sockUserJid = currentSock.user?.id;
+    const sockDigits = typeof sockUserJid === 'string' ? extractPhoneDigitsFromJid(sockUserJid) : null;
+
     for (const itemUnknown of items) {
       if (!itemUnknown || typeof itemUnknown !== 'object') continue;
       const item = itemUnknown as {
@@ -1043,6 +1071,14 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
             ? item.reaction.key.participant
             : undefined;
       if (!participantRaw) continue;
+
+      const participantJid = resolveParticipantJid({
+        participant: participantRaw,
+        store: deps.store,
+        authInfoDir: deps.authInfoDir,
+      });
+      const participantDigits = extractPhoneDigitsFromJid(participantJid);
+      if (sockDigits && participantDigits && participantDigits === sockDigits) continue;
 
       await handleTicketReactionClaim({
         sock: currentSock,

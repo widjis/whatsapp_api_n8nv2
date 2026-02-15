@@ -334,3 +334,12 @@
 ## [2026-02-15 17:05:05 WITA] Remove env toggle for requester notification on new tickets
 - Change:
   - Removed `NOTIFY_REQUESTER_NEW_TICKET` support; use `notify_requester_new` in webhook payload.
+
+## [2026-02-15 17:13:47 WITA] Avoid treating bot as reaction claimant
+- Change:
+  - Skipped ticket-claim handling when the reaction participant resolves to the bot JID.
+
+## [2026-02-15 17:18:21 WITA] Fix bot claimant detection for device and LID JIDs
+- Change:
+  - Resolved reaction participants before comparing to the bot user JID.
+  - Supported device JID formats (e.g. `628xxx:device@s.whatsapp.net`) when extracting phone digits.
