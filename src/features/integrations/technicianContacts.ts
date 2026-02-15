@@ -29,6 +29,10 @@ function resolveContactsPath(): string {
   return path.join(resolveDataDir(), 'technicianContacts.json');
 }
 
+export function getTechnicianContactsPath(): string {
+  return resolveContactsPath();
+}
+
 export function normalizeTechnicianPhoneNumber(number: string): string {
   let formatted = number.replace(/\D/g, '');
   if (formatted.startsWith('0')) {

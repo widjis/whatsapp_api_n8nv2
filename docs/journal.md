@@ -289,3 +289,17 @@
   - Updated docker-compose to mount `./data` into the container and use it as `DATA_DIR`.
 - Impact:
   - Host path `./data` now persists Baileys auth/store/uploads and technician contacts.
+
+## [2026-02-15 14:45:26 WITA] Fix Docker build stage missing package.json
+- Change:
+  - Copied `package.json` and `package-lock.json` into the Docker build stage.
+- Reason:
+  - `npm run build` needs `package.json` inside the build stage.
+
+## [2026-02-15 16:07:36 WITA] Improve /technician list empty state
+- Change:
+  - `/technician list` now prints the technicianContacts.json storage path and add command usage when empty.
+
+## [2026-02-15 16:06:59 WITA] Fix ticket claim reactions handled as messages
+- Change:
+  - Added support for ticket claim reactions arriving via `messages.upsert` reactionMessage.

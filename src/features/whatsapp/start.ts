@@ -20,6 +20,7 @@ import {
   addTechnicianContact,
   deleteTechnicianContact,
   getContactByPhone,
+  getTechnicianContactsPath,
   getTechnicianContactById,
   listTechnicianContacts,
   normalizeTechnicianPhoneNumber,
@@ -293,6 +294,113 @@ function parseReactionGroupIds(): Set<string> {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   return new Set(parts);
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function extractReactionTargetFromMessage(message: unknown): { messageId: string; remoteJid?: string } | null {
+  if (!isRecordValue(message)) return null;
+
+  const reactionMessage = message.reactionMessage;
+  if (isRecordValue(reactionMessage)) {
+    const key = reactionMessage.key;
+    if (!isRecordValue(key)) return null;
+    const messageId = typeof key.id === 'string' ? key.id : '';
+    const remoteJid = typeof key.remoteJid === 'string' ? key.remoteJid : undefined;
+    if (!messageId) return null;
+    return { messageId, remoteJid };
+  }
+
+  const ephemeral = message.ephemeralMessage;
+  if (isRecordValue(ephemeral)) {
+    const inner = ephemeral.message;
+    return extractReactionTargetFromMessage(inner);
+  }
+
+  return null;
+}
+
+async function handleTicketReactionClaim(args: {
+  sock: WASocket;
+  deps: StartWhatsAppDeps;
+  remoteJid: string;
+  messageId: string;
+  participantRaw: string;
+}): Promise<void> {
+  const participantJid = resolveParticipantJid({
+    participant: args.participantRaw,
+    store: args.deps.store,
+    authInfoDir: args.deps.authInfoDir,
+  });
+  const digits = extractPhoneDigitsFromJid(participantJid);
+  if (!digits) return;
+
+  const reacterPhone = normalizeTechnicianPhoneNumber(digits);
+  const tech = getContactByPhone(reacterPhone);
+  const stored = await loadTicketNotification({ remoteJid: args.remoteJid, messageId: args.messageId });
+  if (!stored) return;
+
+  if (!tech) {
+    await args.sock.sendMessage(args.remoteJid, {
+      text: `Ticket ${stored.ticketId} cannot be claimed: phone ${reacterPhone} is not registered as a technician.`,
+    });
+    return;
+  }
+
+  const claim = await claimTicketNotification({
+    remoteJid: args.remoteJid,
+    messageId: args.messageId,
+    claimantPhone: reacterPhone,
+    claimantName: tech.name,
+  });
+
+  if (!claim.ok) {
+    await args.sock.sendMessage(args.remoteJid, { text: `Ticket ${stored.ticketId} cannot be claimed (${claim.reason}).` });
+    return;
+  }
+
+  if (claim.wasClaimed) {
+    const by = claim.record.claimedByName ?? claim.record.claimedByPhone ?? 'another technician';
+    await args.sock.sendMessage(args.remoteJid, { text: `Sorry, ticket *${stored.ticketId}* has been handled by *${by}*.` });
+    return;
+  }
+
+  const requestObj = await viewRequest(stored.ticketId);
+  const priorityName = requestObj?.priority?.name;
+  const priority = typeof priorityName === 'string' && priorityName.trim().length > 0 ? priorityName : 'Low';
+
+  const updateRes = await updateRequest(stored.ticketId, {
+    ictTechnician: tech.ict_name,
+    status: 'In Progress',
+    priority,
+  });
+
+  if (!updateRes.success) {
+    await args.sock.sendMessage(args.remoteJid, {
+      text: `Ticket *${stored.ticketId}* claimed by *${tech.name}*, but failed to update status: ${updateRes.message}`,
+    });
+    return;
+  }
+
+  const groupName = determineServiceDeskGroupByRole(tech.technician);
+  const assignRes = await assignTechnicianToRequest({
+    requestId: stored.ticketId,
+    groupName,
+    technicianName: tech.technician,
+  });
+
+  if (!assignRes.success) {
+    await args.sock.sendMessage(args.remoteJid, {
+      text: `Ticket *${stored.ticketId}* claimed by *${tech.name}* and set to *In Progress*, but assignment failed: ${assignRes.message}`,
+    });
+    return;
+  }
+
+  await args.sock.sendMessage(args.remoteJid, {
+    text: `✅ Ticket *${stored.ticketId}* claimed by *${tech.name}* (status: *In Progress*).`,
+  });
 }
 
 function resolveParticipantJid(args: { participant: string; store: InMemoryStore; authInfoDir: string }): string {
@@ -612,7 +720,14 @@ async function handleCommand(args: {
       if (sub === 'list') {
         const contacts = listTechnicianContacts();
         if (contacts.length === 0) {
-          await sock.sendMessage(remoteJid, { text: 'No technicians found.' });
+          const contactsPath = getTechnicianContactsPath();
+          await sock.sendMessage(remoteJid, {
+            text:
+              `No technicians found.\n\n` +
+              `Storage: ${contactsPath}\n\n` +
+              `Add one:\n` +
+              `/technician add "Name" "ICT Name" "628xxxxxxxxxxx" "email@company.com" "Role" "Gender"`,
+          });
           return;
         }
 
@@ -813,10 +928,32 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
     const currentSock = sock;
     if (!currentSock) return;
 
+    const allowedReactionGroups = parseReactionGroupIds();
+
     for (const msg of payloadUnknown.messages) {
       if (msg.key?.fromMe) continue;
       const remoteJid = msg.key?.remoteJid;
       if (!remoteJid) continue;
+
+      if (allowedReactionGroups.size > 0) {
+        const reactionTarget = extractReactionTargetFromMessage(msg.message);
+        if (reactionTarget?.messageId) {
+          if (allowedReactionGroups.has(remoteJid)) {
+            const participantRaw = msg.key?.participant;
+            if (typeof participantRaw === 'string' && participantRaw) {
+              await handleTicketReactionClaim({
+                sock: currentSock,
+                deps,
+                remoteJid,
+                messageId: reactionTarget.messageId,
+                participantRaw,
+              });
+              continue;
+            }
+          }
+        }
+      }
+
       const messageContent = extractMessageContent(msg);
       if (messageContent.startsWith('/')) {
         await handleCommand({
@@ -835,12 +972,13 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
   sock.ev.on('messages.reaction', async (payloadUnknown) => {
     const allowedGroups = parseReactionGroupIds();
     if (allowedGroups.size === 0) return;
-    if (!Array.isArray(payloadUnknown)) return;
+
+    const items = Array.isArray(payloadUnknown) ? payloadUnknown : [payloadUnknown];
 
     const currentSock = sock;
     if (!currentSock) return;
 
-    for (const itemUnknown of payloadUnknown) {
+    for (const itemUnknown of items) {
       if (!itemUnknown || typeof itemUnknown !== 'object') continue;
       const item = itemUnknown as {
         key?: { remoteJid?: unknown; id?: unknown; participant?: unknown };
@@ -860,73 +998,12 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
             : undefined;
       if (!participantRaw) continue;
 
-      const participantJid = resolveParticipantJid({ participant: participantRaw, store: deps.store, authInfoDir: deps.authInfoDir });
-      const digits = extractPhoneDigitsFromJid(participantJid);
-      if (!digits) continue;
-
-      const reacterPhone = normalizeTechnicianPhoneNumber(digits);
-      const tech = getContactByPhone(reacterPhone);
-      const stored = await loadTicketNotification({ remoteJid, messageId });
-      if (!stored) continue;
-
-      if (!tech) {
-        await currentSock.sendMessage(remoteJid, {
-          text: `Ticket ${stored.ticketId} cannot be claimed: phone ${reacterPhone} is not registered as a technician.`,
-        });
-        continue;
-      }
-
-      const claim = await claimTicketNotification({
+      await handleTicketReactionClaim({
+        sock: currentSock,
+        deps,
         remoteJid,
         messageId,
-        claimantPhone: reacterPhone,
-        claimantName: tech.name,
-      });
-
-      if (!claim.ok) {
-        await currentSock.sendMessage(remoteJid, { text: `Ticket ${stored.ticketId} cannot be claimed (${claim.reason}).` });
-        continue;
-      }
-
-      if (claim.wasClaimed) {
-        const by = claim.record.claimedByName ?? claim.record.claimedByPhone ?? 'another technician';
-        await currentSock.sendMessage(remoteJid, { text: `Sorry, ticket *${stored.ticketId}* has been handled by *${by}*.` });
-        continue;
-      }
-
-      const requestObj = await viewRequest(stored.ticketId);
-      const priorityName = requestObj?.priority?.name;
-      const priority = typeof priorityName === 'string' && priorityName.trim().length > 0 ? priorityName : 'Low';
-
-      const updateRes = await updateRequest(stored.ticketId, {
-        ictTechnician: tech.ict_name,
-        status: 'In Progress',
-        priority,
-      });
-
-      if (!updateRes.success) {
-        await currentSock.sendMessage(remoteJid, {
-          text: `Ticket *${stored.ticketId}* claimed by *${tech.name}*, but failed to update status: ${updateRes.message}`,
-        });
-        continue;
-      }
-
-      const groupName = determineServiceDeskGroupByRole(tech.technician);
-      const assignRes = await assignTechnicianToRequest({
-        requestId: stored.ticketId,
-        groupName,
-        technicianName: tech.technician,
-      });
-
-      if (!assignRes.success) {
-        await currentSock.sendMessage(remoteJid, {
-          text: `Ticket *${stored.ticketId}* claimed by *${tech.name}* and set to *In Progress*, but assignment failed: ${assignRes.message}`,
-        });
-        continue;
-      }
-
-      await currentSock.sendMessage(remoteJid, {
-        text: `✅ Ticket *${stored.ticketId}* claimed by *${tech.name}* (status: *In Progress*).`,
+        participantRaw,
       });
     }
   });
