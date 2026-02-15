@@ -28,7 +28,7 @@ import {
   updateTechnicianContact,
 } from '../integrations/technicianContacts.js';
 import type { TechnicianContact, TechnicianContactUpdateField } from '../integrations/technicianContacts.js';
-import { claimTicketNotification, loadTicketNotification } from '../tickets/claimStore.js';
+import { claimTicketNotification, loadTicketNotification, unclaimTicketNotification } from '../tickets/claimStore.js';
 import { assignTechnicianToRequest, updateRequest, viewRequest } from '../integrations/ticketHandle.js';
 
 let sock: WASocket | undefined;
@@ -300,7 +300,9 @@ function isRecordValue(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function extractReactionTargetFromMessage(message: unknown): { messageId: string; remoteJid?: string } | null {
+function extractReactionTargetFromMessage(
+  message: unknown
+): { messageId: string; remoteJid?: string; text?: string | null } | null {
   if (!isRecordValue(message)) return null;
 
   const reactionMessage = message.reactionMessage;
@@ -309,8 +311,14 @@ function extractReactionTargetFromMessage(message: unknown): { messageId: string
     if (!isRecordValue(key)) return null;
     const messageId = typeof key.id === 'string' ? key.id : '';
     const remoteJid = typeof key.remoteJid === 'string' ? key.remoteJid : undefined;
+    const text =
+      typeof reactionMessage.text === 'string'
+        ? reactionMessage.text
+        : reactionMessage.text === null
+          ? null
+          : undefined;
     if (!messageId) return null;
-    return { messageId, remoteJid };
+    return { messageId, remoteJid, text };
   }
 
   const ephemeral = message.ephemeralMessage;
@@ -320,6 +328,10 @@ function extractReactionTargetFromMessage(message: unknown): { messageId: string
   }
 
   return null;
+}
+
+function isReactionRemoved(reactionText: string | null | undefined): boolean {
+  return reactionText === '' || reactionText === null;
 }
 
 async function handleTicketReactionClaim(args: {
@@ -431,6 +443,48 @@ async function handleTicketReactionClaim(args: {
 
   await args.sock.sendMessage(args.remoteJid, {
     text: `✅ Ticket *${ticketId}* claimed.\nTechnician: *${tech.name}*\nStatus: *In Progress*`,
+  });
+}
+
+async function handleTicketReactionUnclaim(args: {
+  sock: WASocket;
+  deps: StartWhatsAppDeps;
+  remoteJid: string;
+  messageId: string;
+  participantRaw: string;
+}): Promise<void> {
+  const sockUserJid = args.sock.user?.id;
+  const sockDigits = typeof sockUserJid === 'string' ? extractPhoneDigitsFromJid(sockUserJid) : null;
+
+  const participantJid = resolveParticipantJid({
+    participant: args.participantRaw,
+    store: args.deps.store,
+    authInfoDir: args.deps.authInfoDir,
+  });
+  const digits = extractPhoneDigitsFromJid(participantJid);
+  if (!digits) return;
+  if (sockDigits && digits === sockDigits) return;
+
+  const reacterPhone = normalizeTechnicianPhoneNumber(digits);
+  const stored = await loadTicketNotification({ remoteJid: args.remoteJid, messageId: args.messageId });
+  if (!stored) return;
+  if (!stored.claimed) return;
+  if (stored.claimedByPhone && stored.claimedByPhone !== reacterPhone) return;
+
+  const ticketId = stored.ticketId;
+
+  const result = await unclaimTicketNotification({
+    remoteJid: args.remoteJid,
+    messageId: args.messageId,
+    claimantPhone: reacterPhone,
+  });
+
+  if (!result.ok) return;
+  if (!result.wasUnclaimed) return;
+
+  const by = stored.claimedByName ?? stored.claimedByPhone ?? reacterPhone;
+  await args.sock.sendMessage(args.remoteJid, {
+    text: `*Ticket Unclaimed*\nTicket ID: *${ticketId}*\nRemoved by: *${by}*`,
   });
 }
 
@@ -1012,13 +1066,23 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
           if (allowedReactionGroups.has(remoteJid)) {
             const participantRaw = pickReactionSenderFromUpsertMessage({ msg, currentSock, deps });
             if (participantRaw) {
-              await handleTicketReactionClaim({
-                sock: currentSock,
-                deps,
-                remoteJid,
-                messageId: reactionTarget.messageId,
-                participantRaw,
-              });
+              if (isReactionRemoved(reactionTarget.text)) {
+                await handleTicketReactionUnclaim({
+                  sock: currentSock,
+                  deps,
+                  remoteJid,
+                  messageId: reactionTarget.messageId,
+                  participantRaw,
+                });
+              } else {
+                await handleTicketReactionClaim({
+                  sock: currentSock,
+                  deps,
+                  remoteJid,
+                  messageId: reactionTarget.messageId,
+                  participantRaw,
+                });
+              }
               continue;
             }
           }
@@ -1056,7 +1120,7 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
       if (!itemUnknown || typeof itemUnknown !== 'object') continue;
       const item = itemUnknown as {
         key?: { remoteJid?: unknown; id?: unknown; participant?: unknown };
-        reaction?: { key?: { participant?: unknown } };
+        reaction?: { key?: { participant?: unknown }; text?: unknown };
       };
 
       const remoteJid = typeof item.key?.remoteJid === 'string' ? item.key.remoteJid : undefined;
@@ -1072,6 +1136,9 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
             : undefined;
       if (!participantRaw) continue;
 
+      const reactionText =
+        typeof item.reaction?.text === 'string' ? item.reaction.text : item.reaction?.text === null ? null : undefined;
+
       const participantJid = resolveParticipantJid({
         participant: participantRaw,
         store: deps.store,
@@ -1080,13 +1147,23 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
       const participantDigits = extractPhoneDigitsFromJid(participantJid);
       if (sockDigits && participantDigits && participantDigits === sockDigits) continue;
 
-      await handleTicketReactionClaim({
-        sock: currentSock,
-        deps,
-        remoteJid,
-        messageId,
-        participantRaw,
-      });
+      if (isReactionRemoved(reactionText)) {
+        await handleTicketReactionUnclaim({
+          sock: currentSock,
+          deps,
+          remoteJid,
+          messageId,
+          participantRaw,
+        });
+      } else {
+        await handleTicketReactionClaim({
+          sock: currentSock,
+          deps,
+          remoteJid,
+          messageId,
+          participantRaw,
+        });
+      }
     }
   });
 }

@@ -12,6 +12,7 @@
 - Optional N8N webhook integration for auto-replies.
 - IP allow-listing for endpoints.
 - Admin command: `/resetpassword` to update user password in Active Directory.
+- Ticket claim via reaction in configured groups (remove reaction to unclaim).
 
 ## Requirements
 - Node.js 18+

@@ -343,3 +343,7 @@
 - Change:
   - Resolved reaction participants before comparing to the bot user JID.
   - Supported device JID formats (e.g. `628xxx:device@s.whatsapp.net`) when extracting phone digits.
+
+## [2026-02-15 17:26:08 WITA] Support unclaim when reaction removed
+- Change:
+  - Removing a claim reaction now clears the stored claim when removed by the original claimer.
