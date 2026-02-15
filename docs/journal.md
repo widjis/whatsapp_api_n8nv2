@@ -351,3 +351,25 @@
 ## [2026-02-15 17:37:52 WITA] Revert ServiceDesk status and assignment on unclaim
 - Change:
   - Ticket unclaim now reverts ServiceDesk status to Open and restores previous assignment when available.
+
+## [2026-02-15 19:12:18 WITA] Apply service category suggestion on webhook new tickets
+- Change:
+  - Suggested service category is applied before sending new-ticket notifications.
+  - Category updates no longer overwrite ictTechnician on webhook new.
+
+## [2026-02-15 19:22:24 WITA] Document Docker rebuild for code changes
+- Change:
+  - Added Docker rebuild steps to avoid running an old baked image.
+
+## [2026-02-15 19:32:46 WITA] Port legacy message reply rules and media attachments
+- Change:
+  - Updated `messages.upsert` handling to reply to direct chats unless the message is a `/command`.
+  - Updated group handling to reply only when the bot is tagged (text `@...` or `mentionedJid`).
+  - Added inbound media downloading and base64 encoding for image/video/audio/document messages.
+  - Extended N8N payload with optional `attachments` metadata and base64 content.
+
+## [2026-02-15 19:40:32 WITA] Ensure users always get a reply from n8n flow
+- Change:
+  - Added legacy-style fallback reply when n8n response is empty or webhook fails.
+  - Added legacy-style typing indicator support (`TYPING_ENABLED=true`) for n8n replies.
+  - Added optional message buffering controls (`MESSAGE_BUFFER_ENABLED` and presence buffering flags).

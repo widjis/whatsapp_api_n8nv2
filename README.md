@@ -13,6 +13,7 @@
 - IP allow-listing for endpoints.
 - Admin command: `/resetpassword` to update user password in Active Directory.
 - Ticket claim via reaction in configured groups (remove reaction to unclaim).
+- Auto service category suggestion for new tickets from webhook (requires `OPENAI_API_KEY`).
 
 ## Requirements
 - Node.js 18+
@@ -36,6 +37,10 @@ ALLOWED_IPS=127.0.0.1,::1
 # N8N integration (optional)
 N8N_WEBHOOK_URL=https://your-n8n-host/webhook/your-workflow
 N8N_TIMEOUT=5000
+
+# Service category AI (optional)
+OPENAI_API_KEY=yourOpenAiKey
+SERVICE_CATEGORY_AI_ENABLED=true
 
 # LDAP (required for /resetpassword)
 LDAP_URL=ldap://10.60.10.56:389
@@ -66,6 +71,13 @@ npm start     # node
 Build + run (reads `.env` and persists WhatsApp state under a Docker volume):
 ```bash
 docker compose up --build
+```
+
+If you changed code and behavior is still the old one, force a rebuild (the app code is baked into the image):
+```bash
+docker compose down
+docker compose build --no-cache
+docker compose up -d
 ```
 
 Notes:

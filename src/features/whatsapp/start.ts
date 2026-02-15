@@ -5,15 +5,16 @@ import { existsSync, readFileSync } from 'node:fs';
 import {
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   makeCacheableSignalKeyStore,
   makeWASocket,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
-import type { WASocket, proto } from '@whiskeysockets/baileys';
+import type { WASocket, proto, WAMessage } from '@whiskeysockets/baileys';
 import type { Server as SocketIoServer } from 'socket.io';
 import type { InMemoryStore } from './store.js';
-import { extractMessageContent, resolveSenderNumber } from './utils.js';
-import { handleN8nIntegration } from '../integrations/n8n.js';
+import { resolveSenderNumber } from './utils.js';
+import { handleN8nIntegration, type N8nAttachment } from '../integrations/n8n.js';
 import { findUsersByCommonName, getBitLockerInfo, renderFindUserCaption, resetPassword } from '../integrations/ldap.js';
 import { buildGetAssetReply, CATEGORY_MAPPING } from '../integrations/snipeIt.js';
 import {
@@ -32,6 +33,166 @@ import { claimTicketNotification, loadTicketNotification, unclaimTicketNotificat
 import { assignTechnicianToRequest, updateRequest, viewRequest } from '../integrations/ticketHandle.js';
 
 let sock: WASocket | undefined;
+const mediaLogger = pino({ level: 'fatal' });
+
+const MESSAGE_BUFFER_ENABLED = process.env.MESSAGE_BUFFER_ENABLED === 'true';
+const MESSAGE_BUFFER_TIMEOUT_MS = Number(process.env.MESSAGE_BUFFER_TIMEOUT ?? '3000');
+const PRESENCE_BUFFER_ENABLED = process.env.PRESENCE_BUFFER_ENABLED === 'true';
+const PRESENCE_BUFFER_MAX_TIMEOUT_MS = Number(process.env.PRESENCE_BUFFER_MAX_TIMEOUT ?? '10000');
+const PRESENCE_BUFFER_STOP_DELAY_MS = Number(process.env.PRESENCE_BUFFER_STOP_DELAY ?? '2000');
+const PRESENCE_SUBSCRIPTION_ENABLED = process.env.PRESENCE_SUBSCRIPTION_ENABLED === 'true';
+
+type PresenceState = { isTyping: boolean; lastUpdateMs: number };
+type BufferedMessage = {
+  msg: proto.IWebMessageInfo;
+  text: string;
+  attachments: N8nAttachment[];
+  remoteJid: string;
+  senderNumber: string;
+  pushName: string;
+  isGroup: boolean;
+  shouldReply: boolean;
+};
+
+type MessageBuffer = {
+  items: BufferedMessage[];
+  timer: ReturnType<typeof setTimeout> | null;
+  typingTimer: ReturnType<typeof setTimeout> | null;
+  lastMessageTimeMs: number;
+  isTyping: boolean;
+};
+
+const messageBuffers = new Map<string, MessageBuffer>();
+const presenceStatus = new Map<string, PresenceState>();
+
+function getBufferKey(args: { remoteJid: string; senderNumber: string }): string {
+  return `${args.remoteJid}|${args.senderNumber}`;
+}
+
+function subscribeToPresence(args: { sock: WASocket; jid: string }): void {
+  if (!PRESENCE_SUBSCRIPTION_ENABLED) return;
+  try {
+    args.sock.presenceSubscribe(args.jid);
+  } catch {
+    // ignore
+  }
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function extractPresenceItems(payloadUnknown: unknown): Array<{ remoteJid: string; participantJid: string; presence: string }> {
+  if (!isRecordValue(payloadUnknown)) return [];
+  const id = payloadUnknown.id;
+  const presencesUnknown = payloadUnknown.presences;
+  if (typeof id !== 'string' || !isRecordValue(presencesUnknown)) return [];
+
+  const out: Array<{ remoteJid: string; participantJid: string; presence: string }> = [];
+  for (const [participantJid, value] of Object.entries(presencesUnknown)) {
+    if (!isRecordValue(value)) continue;
+    const lastKnownPresence = value.lastKnownPresence;
+    if (typeof lastKnownPresence !== 'string') continue;
+    out.push({ remoteJid: id, participantJid, presence: lastKnownPresence });
+  }
+  return out;
+}
+
+function isPresenceTyping(presence: string): boolean {
+  return presence === 'composing' || presence === 'recording';
+}
+
+function scheduleFlush(args: {
+  key: string;
+  buffer: MessageBuffer;
+  forceMaxTimeout: boolean;
+}): void {
+  const buffer = args.buffer;
+  if (buffer.timer) clearTimeout(buffer.timer);
+  if (buffer.typingTimer) clearTimeout(buffer.typingTimer);
+  buffer.typingTimer = null;
+
+  if (PRESENCE_BUFFER_ENABLED) {
+    buffer.timer = setTimeout(
+      () => {
+        void flushMessageBuffer(args.key);
+      },
+      args.forceMaxTimeout ? PRESENCE_BUFFER_MAX_TIMEOUT_MS : PRESENCE_BUFFER_STOP_DELAY_MS
+    );
+    return;
+  }
+
+  buffer.timer = setTimeout(() => {
+    void flushMessageBuffer(args.key);
+  }, MESSAGE_BUFFER_TIMEOUT_MS);
+}
+
+function addToMessageBuffer(item: BufferedMessage): boolean {
+  if (!MESSAGE_BUFFER_ENABLED) return false;
+  if (!item.shouldReply) return true;
+
+  const key = getBufferKey({ remoteJid: item.remoteJid, senderNumber: item.senderNumber });
+  const now = Date.now();
+
+  if (!messageBuffers.has(key)) {
+    messageBuffers.set(key, {
+      items: [],
+      timer: null,
+      typingTimer: null,
+      lastMessageTimeMs: now,
+      isTyping: false,
+    });
+
+    const currentSock = sock;
+    if (currentSock) {
+      subscribeToPresence({ sock: currentSock, jid: item.senderNumber });
+    }
+  }
+
+  const buffer = messageBuffers.get(key);
+  if (!buffer) return false;
+
+  buffer.items.push(item);
+  buffer.lastMessageTimeMs = now;
+
+  const presence = presenceStatus.get(key);
+  const currentlyTyping = Boolean(presence?.isTyping);
+  scheduleFlush({ key, buffer, forceMaxTimeout: currentlyTyping });
+  return true;
+}
+
+async function flushMessageBuffer(key: string): Promise<void> {
+  const buffer = messageBuffers.get(key);
+  if (!buffer || buffer.items.length === 0) return;
+
+  if (buffer.timer) clearTimeout(buffer.timer);
+  if (buffer.typingTimer) clearTimeout(buffer.typingTimer);
+  messageBuffers.delete(key);
+
+  const combinedText = buffer.items.map((i) => i.text).filter((t) => t.trim().length > 0).join('\n');
+  if (combinedText.trim().startsWith('/')) return;
+
+  const first = buffer.items[0];
+  if (!first) return;
+
+  const combinedAttachments: N8nAttachment[] = [];
+  for (const item of buffer.items) {
+    for (const att of item.attachments) combinedAttachments.push(att);
+  }
+
+  const currentSock = sock;
+  const deps = activeDeps;
+  if (!currentSock || !deps) return;
+
+  await handleMessage({
+    sock: currentSock,
+    msg: first.msg,
+    remoteJid: first.remoteJid,
+    messageContent: combinedText || first.text,
+    attachments: combinedAttachments,
+    deps,
+  });
+}
 
 export function getSocket(): WASocket | undefined {
   return sock;
@@ -233,6 +394,13 @@ type StartWhatsAppDeps = {
   allowedPhoneNumbers: string[];
 };
 
+let activeDeps: StartWhatsAppDeps | null = null;
+
+type ParsedIncomingMessage = {
+  text: string;
+  attachments: N8nAttachment[];
+};
+
 function isNotifyUpsertPayload(
   value: unknown
 ): value is { type: 'notify'; messages: proto.IWebMessageInfo[] } {
@@ -294,10 +462,6 @@ function parseReactionGroupIds(): Set<string> {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   return new Set(parts);
-}
-
-function isRecordValue(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function extractReactionTargetFromMessage(
@@ -597,6 +761,182 @@ function extractPhoneDigitsFromJid(jid: string): string | null {
   return match?.[1] ?? null;
 }
 
+function unwrapEphemeralMessage(message: proto.IMessage | null | undefined): proto.IMessage | undefined {
+  const inner = message?.ephemeralMessage?.message;
+  return inner ?? (message ?? undefined);
+}
+
+function extractMentionedJids(message: proto.IMessage | undefined): string[] {
+  const contexts = [
+    message?.extendedTextMessage?.contextInfo,
+    message?.imageMessage?.contextInfo,
+    message?.videoMessage?.contextInfo,
+    message?.audioMessage?.contextInfo,
+    message?.documentMessage?.contextInfo,
+  ];
+
+  const out: string[] = [];
+  for (const ctx of contexts) {
+    const mentioned = ctx?.mentionedJid;
+    if (!Array.isArray(mentioned)) continue;
+    for (const item of mentioned) {
+      if (typeof item === 'string' && item.length > 0) out.push(item);
+    }
+  }
+  return Array.from(new Set(out));
+}
+
+function isTaggedInGroup(args: {
+  sock: WASocket;
+  deps: StartWhatsAppDeps;
+  msg: proto.IWebMessageInfo;
+  messageText: string;
+}): boolean {
+  const botJid = args.sock.user?.id;
+  if (typeof botJid !== 'string' || botJid.length === 0) return false;
+
+  const botDigits = extractPhoneDigitsFromJid(botJid);
+  const botHandle = botJid.split('@')[0] ?? '';
+  const botHandleBase = botHandle.split(':')[0] ?? botHandle;
+
+  const text = args.messageText;
+  const textMentioned =
+    (botDigits ? text.includes(`@${botDigits}`) : false) ||
+    (botHandleBase ? text.includes(`@${botHandleBase}`) : false) ||
+    (botHandle ? text.includes(`@${botHandle}`) : false);
+
+  const rawMessage = unwrapEphemeralMessage(args.msg.message);
+  const mentionedJids = extractMentionedJids(rawMessage);
+  const jidMentioned = mentionedJids.some((jid) => {
+    const resolved = resolveParticipantJid({
+      participant: jid,
+      store: args.deps.store,
+      authInfoDir: args.deps.authInfoDir,
+    });
+    if (resolved === botJid) return true;
+    const digits = extractPhoneDigitsFromJid(resolved);
+    if (botDigits && digits && botDigits === digits) return true;
+    const base = (resolved.split('@')[0] ?? '').split(':')[0] ?? '';
+    return base.length > 0 && base === botHandleBase;
+  });
+
+  return textMentioned || jidMentioned;
+}
+
+async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessageInfo }): Promise<ParsedIncomingMessage> {
+  if (!args.msg.key) return { text: '', attachments: [] };
+  const rawMessage = unwrapEphemeralMessage(args.msg.message);
+  if (!rawMessage) return { text: '', attachments: [] };
+
+  if (rawMessage.conversation) return { text: rawMessage.conversation, attachments: [] };
+  if (rawMessage.extendedTextMessage?.text) return { text: rawMessage.extendedTextMessage.text, attachments: [] };
+  if (rawMessage.buttonsResponseMessage?.selectedButtonId) {
+    return { text: rawMessage.buttonsResponseMessage.selectedButtonId, attachments: [] };
+  }
+  if (rawMessage.listResponseMessage?.singleSelectReply?.selectedRowId) {
+    return { text: rawMessage.listResponseMessage.singleSelectReply.selectedRowId, attachments: [] };
+  }
+  if (rawMessage.templateButtonReplyMessage?.selectedId) {
+    return { text: rawMessage.templateButtonReplyMessage.selectedId, attachments: [] };
+  }
+
+  const msgForDownload: WAMessage = { ...args.msg, key: args.msg.key, message: rawMessage };
+
+  async function downloadBase64(): Promise<string | null> {
+    try {
+      const downloaded = await downloadMediaMessage(msgForDownload, 'buffer', {}, {
+        logger: mediaLogger,
+        reuploadRequest: args.sock.updateMediaMessage,
+      });
+      const buffer = Buffer.isBuffer(downloaded) ? downloaded : Buffer.from(downloaded as Uint8Array);
+      return buffer.toString('base64');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('Error downloading media:', message);
+      return null;
+    }
+  }
+
+  if (rawMessage.imageMessage) {
+    const dataBase64 = await downloadBase64();
+    const caption = rawMessage.imageMessage.caption ?? '';
+    const attachment: N8nAttachment = {
+      type: 'image',
+      caption,
+      mimetype: rawMessage.imageMessage.mimetype ?? 'image/jpeg',
+      fileLength: Number(rawMessage.imageMessage.fileLength ?? 0),
+      fileName: null,
+      seconds: null,
+      width: Number(rawMessage.imageMessage.width ?? 0) || null,
+      height: Number(rawMessage.imageMessage.height ?? 0) || null,
+      ptt: null,
+      dataBase64,
+      error: dataBase64 ? null : 'Failed to download image',
+    };
+    return { text: caption || 'Image message received', attachments: [attachment] };
+  }
+
+  if (rawMessage.videoMessage) {
+    const dataBase64 = await downloadBase64();
+    const caption = rawMessage.videoMessage.caption ?? '';
+    const attachment: N8nAttachment = {
+      type: 'video',
+      caption,
+      mimetype: rawMessage.videoMessage.mimetype ?? 'video/mp4',
+      fileLength: Number(rawMessage.videoMessage.fileLength ?? 0),
+      fileName: null,
+      seconds: Number(rawMessage.videoMessage.seconds ?? 0) || null,
+      width: Number(rawMessage.videoMessage.width ?? 0) || null,
+      height: Number(rawMessage.videoMessage.height ?? 0) || null,
+      ptt: null,
+      dataBase64,
+      error: dataBase64 ? null : 'Failed to download video',
+    };
+    return { text: caption || 'Video message received', attachments: [attachment] };
+  }
+
+  if (rawMessage.audioMessage) {
+    const dataBase64 = await downloadBase64();
+    const isPtt = Boolean(rawMessage.audioMessage.ptt);
+    const attachment: N8nAttachment = {
+      type: 'audio',
+      caption: '',
+      mimetype: rawMessage.audioMessage.mimetype ?? 'audio/ogg',
+      fileLength: Number(rawMessage.audioMessage.fileLength ?? 0),
+      fileName: null,
+      seconds: Number(rawMessage.audioMessage.seconds ?? 0) || null,
+      width: null,
+      height: null,
+      ptt: isPtt,
+      dataBase64,
+      error: dataBase64 ? null : 'Failed to download audio',
+    };
+    return { text: isPtt ? 'Voice message received' : 'Audio message received', attachments: [attachment] };
+  }
+
+  if (rawMessage.documentMessage) {
+    const dataBase64 = await downloadBase64();
+    const caption = rawMessage.documentMessage.caption ?? '';
+    const attachment: N8nAttachment = {
+      type: 'document',
+      caption,
+      mimetype: rawMessage.documentMessage.mimetype ?? 'application/octet-stream',
+      fileLength: Number(rawMessage.documentMessage.fileLength ?? 0),
+      fileName: rawMessage.documentMessage.fileName ?? null,
+      seconds: null,
+      width: null,
+      height: null,
+      ptt: null,
+      dataBase64,
+      error: dataBase64 ? null : 'Failed to download document',
+    };
+    const fallbackText = attachment.fileName ? `Document: ${attachment.fileName}` : 'Document message received';
+    return { text: caption || fallbackText, attachments: [attachment] };
+  }
+
+  return { text: 'Media/Other', attachments: [] };
+}
+
 function pickReactionSenderFromUpsertMessage(args: {
   msg: proto.IWebMessageInfo;
   currentSock: WASocket;
@@ -708,9 +1048,10 @@ async function handleMessage(args: {
   msg: proto.IWebMessageInfo;
   remoteJid: string;
   messageContent: string;
+  attachments: N8nAttachment[];
   deps: StartWhatsAppDeps;
 }): Promise<void> {
-  const { sock, msg, remoteJid, messageContent, deps } = args;
+  const { sock, msg, remoteJid, messageContent, attachments, deps } = args;
   const isGroup = remoteJid.endsWith('@g.us');
   const senderNumber = resolveSenderNumber({ msg, remoteJid, store: deps.store, authInfoDir: deps.authInfoDir });
   const pushName = msg.pushName ?? 'Unknown';
@@ -731,6 +1072,7 @@ async function handleMessage(args: {
       groupId: isGroup ? remoteJid : null,
       timestamp: new Date().toISOString(),
       messageId: msg.key?.id,
+      attachments: attachments.length > 0 ? attachments : undefined,
     },
     config: { webhookUrl: deps.n8nWebhookUrl, timeoutMs: deps.n8nTimeoutMs },
   });
@@ -1061,6 +1403,9 @@ async function handleCommand(args: {
 }
 
 export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
+  activeDeps = deps;
+  messageBuffers.clear();
+  presenceStatus.clear();
   const { state, saveCreds } = await useMultiFileAuthState(deps.authInfoDir);
 
   sock = makeWASocket({
@@ -1138,6 +1483,7 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
       if (msg.key?.fromMe) continue;
       const remoteJid = msg.key?.remoteJid;
       if (!remoteJid) continue;
+      if (remoteJid === 'status@broadcast') continue;
 
       if (allowedReactionGroups.size > 0) {
         const reactionTarget = extractReactionTargetFromMessage(msg.message);
@@ -1168,7 +1514,8 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
         }
       }
 
-      const messageContent = extractMessageContent(msg);
+      const parsed = await parseIncomingMessage({ sock: currentSock, msg });
+      const messageContent = parsed.text;
       if (messageContent.startsWith('/')) {
         await handleCommand({
           sock: currentSock,
@@ -1178,7 +1525,59 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
           allowedPhoneNumbers: deps.allowedPhoneNumbers,
         });
       } else {
-        await handleMessage({ sock: currentSock, msg, remoteJid, messageContent, deps });
+        const isGroup = remoteJid.endsWith('@g.us');
+        const shouldReply = !isGroup || isTaggedInGroup({ sock: currentSock, deps, msg, messageText: messageContent });
+        if (!shouldReply) continue;
+
+        const senderNumber = resolveSenderNumber({ msg, remoteJid, store: deps.store, authInfoDir: deps.authInfoDir });
+        const pushName = msg.pushName ?? 'Unknown';
+        const buffered = addToMessageBuffer({
+          msg,
+          text: messageContent,
+          attachments: parsed.attachments,
+          remoteJid,
+          senderNumber,
+          pushName,
+          isGroup,
+          shouldReply,
+        });
+
+        if (buffered) continue;
+
+        await handleMessage({ sock: currentSock, msg, remoteJid, messageContent, attachments: parsed.attachments, deps });
+      }
+    }
+  });
+
+  sock.ev.on('presence.update', async (payloadUnknown) => {
+    if (!PRESENCE_BUFFER_ENABLED) return;
+    const deps = activeDeps;
+    if (!deps) return;
+    const items = extractPresenceItems(payloadUnknown);
+    if (items.length === 0) return;
+
+    for (const item of items) {
+      const resolvedParticipantJid = resolveParticipantJid({
+        participant: item.participantJid,
+        store: deps.store,
+        authInfoDir: deps.authInfoDir,
+      });
+
+      const presenceKey = getBufferKey({ remoteJid: item.remoteJid, senderNumber: resolvedParticipantJid });
+      const isTyping = isPresenceTyping(item.presence);
+      presenceStatus.set(presenceKey, { isTyping, lastUpdateMs: Date.now() });
+
+      const buffer = messageBuffers.get(presenceKey);
+      if (!buffer) continue;
+      buffer.isTyping = isTyping;
+
+      if (isTyping) {
+        scheduleFlush({ key: presenceKey, buffer, forceMaxTimeout: true });
+      } else {
+        if (buffer.typingTimer) clearTimeout(buffer.typingTimer);
+        buffer.typingTimer = setTimeout(() => {
+          void flushMessageBuffer(presenceKey);
+        }, PRESENCE_BUFFER_STOP_DELAY_MS);
       }
     }
   });

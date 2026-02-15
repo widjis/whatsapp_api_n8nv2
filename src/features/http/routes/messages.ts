@@ -686,11 +686,26 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       const requesterJid = requesterMobile ? phoneNumberFormatter(requesterMobile) : null;
 
       if (payload.status === 'new') {
+        let categoryForMessage = category;
+        if (category === 'N/A' || category.trim().length === 0) {
+          const suggestedCategory = await defineServiceCategory(requestObj.id);
+          if (suggestedCategory) {
+            const priorityForUpdate = priority !== 'N/A' ? priority : 'Low';
+            const updateRes = await updateRequest(requestObj.id, {
+              serviceCategory: suggestedCategory,
+              priority: priorityForUpdate,
+            });
+            if (updateRes.success) {
+              categoryForMessage = suggestedCategory;
+            }
+          }
+        }
+
         const msgReceiver = renderTicketNewMessage({
           requesterLabel: createdBy,
           createdDate,
           ticketId: requestObj.id,
-          category,
+          category: categoryForMessage,
           priority,
           status: ticketStatus,
           subject,
@@ -713,24 +728,12 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
             ticketId: requestObj.id,
             status: ticketStatus,
             priority,
-            category,
+            category: categoryForMessage,
             subject,
             description: truncatedDescription,
             link: ticketLink,
           });
           await sock.sendMessage(requesterJid, { text: msgRequester });
-        }
-
-        if (ticketStatus === 'Open') {
-          const suggestedCategory = await defineServiceCategory(requestObj.id);
-          if (suggestedCategory) {
-            const priorityForUpdate = priority !== 'N/A' ? priority : 'Low';
-            await updateRequest(requestObj.id, {
-              serviceCategory: suggestedCategory,
-              ictTechnician: 'ICT Helpdesk',
-              priority: priorityForUpdate,
-            });
-          }
         }
 
         if ((requestObj.attachments?.length ?? 0) > 0) {
