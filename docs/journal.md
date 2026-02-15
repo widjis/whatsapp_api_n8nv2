@@ -267,3 +267,25 @@
 ## [2026-02-15 14:23:12 WITA] Improve /getbitlocker message formatting
 - Change:
   - Reformatted `/getbitlocker` WhatsApp output with clearer headings and key sections.
+
+## [2026-02-15 14:27:34 WITA] Improve /getasset response formatting
+- Change:
+  - Reformatted `/getasset` output with a consistent header and aligned tables.
+
+## [2026-02-15 14:31:20 WITA] Improve /technician response formatting
+- Change:
+  - Reformatted `/technician` list/search/view/add/update replies with aligned tables.
+
+## [2026-02-15 14:31:17 WITA] Add Docker production setup
+- Change:
+  - Added Dockerfile and docker-compose.yml for production runs.
+  - Added `DATA_DIR` support so Baileys auth/store/uploads persist under one mounted path.
+- Impact:
+  - `docker compose up --build` runs the service on port 8192.
+  - Mounting `/data` persists `auth_info_baileys/`, `baileys_store.json`, `uploads/`, and `data/`.
+
+## [2026-02-15 14:33:31 WITA] Persist repo ./data via docker-compose bind mount
+- Change:
+  - Updated docker-compose to mount `./data` into the container and use it as `DATA_DIR`.
+- Impact:
+  - Host path `./data` now persists Baileys auth/store/uploads and technician contacts.

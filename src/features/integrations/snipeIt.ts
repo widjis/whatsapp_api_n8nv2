@@ -64,7 +64,8 @@ function getSnipeItConfig(): { ok: true; config: SnipeItConfig } | { ok: false; 
   if (!url || !token) {
     return {
       ok: false,
-      error: 'Snipe-IT is not configured. Set SNIPEIT_URL and SNIPEIT_TOKEN in the environment.',
+      error:
+        '*Snipe-IT is not configured.*\n\nPlease set these environment variables:\n- SNIPEIT_URL\n- SNIPEIT_TOKEN',
     };
   }
 
@@ -196,24 +197,44 @@ async function getCategoryIdByName(config: SnipeItConfig, categoryName: string):
   return hit?.id ?? null;
 }
 
+function formatTwoColumnTable(rows: Array<{ label: string; value: string }>): string {
+  const maxLabel = rows.reduce((m, r) => Math.max(m, r.label.length), 0);
+  return rows.map((r) => `${r.label.padEnd(maxLabel)}  ${r.value}`).join('\n');
+}
+
+function renderAvailableTypesTable(): string {
+  const entries = Object.entries(CATEGORY_MAPPING)
+    .map(([k, v]) => ({ key: k, name: v }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+
+  const maxKey = entries.reduce((m, e) => Math.max(m, e.key.length), 0);
+  const header = `${'Type'.padEnd(maxKey)}  Category`;
+  const lines = entries.map((e) => `${e.key.padEnd(maxKey)}  ${e.name}`);
+  return [header, ...lines].join('\n');
+}
+
 function renderCategorySummary(categoryName: string, summary: AssetSummary): string {
-  if (normalizeText(categoryName) === 'notebook') {
-    return (
-      `Total assets in category "${categoryName}": ${summary.totalAssets}\n`
-      + `Total deployed devices: ${summary.totalDeployed} (i5: ${summary.deployedI5 ?? 0}, i7: ${summary.deployedI7 ?? 0}, Ultra 5: ${summary.deployedUltra5 ?? 0}, Ultra 7: ${summary.deployedUltra7 ?? 0})\n`
-      + `Total ready to deploy devices: ${summary.totalReadyToDeploy} (i5: ${summary.readyToDeployI5 ?? 0}, i7: ${summary.readyToDeployI7 ?? 0}, Ultra 5: ${summary.readyToDeployUltra5 ?? 0}, Ultra 7: ${summary.readyToDeployUltra7 ?? 0})\n`
-      + `Total archived devices: ${summary.totalArchived}\n`
-      + `Total pending devices: ${summary.totalPending}`
-    );
+  const header = `*Snipe-IT Asset Summary*\n*Category:* ${categoryName}`;
+  const statusTable = formatTwoColumnTable([
+    { label: 'Total Assets', value: String(summary.totalAssets) },
+    { label: 'Deployed', value: String(summary.totalDeployed) },
+    { label: 'Ready to Deploy', value: String(summary.totalReadyToDeploy) },
+    { label: 'Archived', value: String(summary.totalArchived) },
+    { label: 'Pending', value: String(summary.totalPending) },
+  ]);
+
+  if (normalizeText(categoryName) !== 'notebook') {
+    return `${header}\n\n\`\`\`\n${statusTable}\n\`\`\``;
   }
 
-  return (
-    `Total assets in category "${categoryName}": ${summary.totalAssets}\n`
-    + `Total deployed devices: ${summary.totalDeployed}\n`
-    + `Total ready to deploy devices: ${summary.totalReadyToDeploy}\n`
-    + `Total archived devices: ${summary.totalArchived}\n`
-    + `Total pending devices: ${summary.totalPending}`
-  );
+  const coreDeployed = `i5 ${summary.deployedI5 ?? 0} | i7 ${summary.deployedI7 ?? 0} | Ultra 5 ${summary.deployedUltra5 ?? 0} | Ultra 7 ${summary.deployedUltra7 ?? 0}`;
+  const coreReady = `i5 ${summary.readyToDeployI5 ?? 0} | i7 ${summary.readyToDeployI7 ?? 0} | Ultra 5 ${summary.readyToDeployUltra5 ?? 0} | Ultra 7 ${summary.readyToDeployUltra7 ?? 0}`;
+  const coreTable = formatTwoColumnTable([
+    { label: 'Deployed', value: coreDeployed },
+    { label: 'Ready to Deploy', value: coreReady },
+  ]);
+
+  return `${header}\n\n\`\`\`\n${statusTable}\n\nCore Type\n${coreTable}\n\`\`\``;
 }
 
 export async function buildGetAssetReply(messageContent: string): Promise<string> {
@@ -226,20 +247,29 @@ export async function buildGetAssetReply(messageContent: string): Promise<string
 
   if (!categoryKey) {
     const categories = await fetchCategories(config);
-    if (categories.length === 0) return 'No categories found.';
+    if (categories.length === 0) return '*No categories found.*';
 
-    let response = 'Total assets in each category:\n';
-    for (const category of categories) {
+    const sorted = [...categories].sort((a, b) => a.name.localeCompare(b.name));
+    const items: Array<{ category: string; total: number }> = [];
+    for (const category of sorted) {
       const assets = await fetchAssetsByCategoryId(config, category.id);
-      response += `${category.name}: ${assets.length}\n`;
+      items.push({ category: category.name, total: assets.length });
     }
-    return response.trimEnd();
+
+    const maxCat = items.reduce((m, i) => Math.max(m, i.category.length), 0);
+    const header = `${'Category'.padEnd(maxCat)}  Total`;
+    const lines = items.map((i) => `${i.category.padEnd(maxCat)}  ${String(i.total)}`);
+    const table = [header, ...lines].join('\n');
+
+    return `*Snipe-IT Asset Summary*\n\n\`\`\`\n${table}\n\`\`\`\n\nUse: /getasset <type>\n\`\`\`\n${renderAvailableTypesTable()}\n\`\`\``;
   }
 
   const mapped = CATEGORY_MAPPING[normalizeText(categoryKey)];
   if (!mapped) {
-    const allowed = Object.keys(CATEGORY_MAPPING).sort().join(', ');
-    return `Unknown asset type: "${categoryKey}". Available types: ${allowed}`;
+    return (
+      `*Unknown asset type:* "${categoryKey}"\n\n`
+      + `Use: /getasset <type>\n\`\`\`\n${renderAvailableTypesTable()}\n\`\`\``
+    );
   }
 
   const categoryId = await getCategoryIdByName(config, mapped);
@@ -249,4 +279,3 @@ export async function buildGetAssetReply(messageContent: string): Promise<string
   const summary = summarizeAssets({ assets, categoryName: mapped });
   return renderCategorySummary(mapped, summary);
 }
-

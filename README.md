@@ -61,6 +61,16 @@ npm run dev   # nodemon
 npm start     # node
 ```
 
+## Docker
+Build + run (reads `.env` and persists WhatsApp state under a Docker volume):
+```bash
+docker compose up --build
+```
+
+Notes:
+- Exposes port `8192`.
+- Persists `auth_info_baileys/`, `baileys_store.json`, `uploads/`, and `data/` under `DATA_DIR=/data` inside the container.
+
 ## Qontak Test
 Environment:
 ```env
@@ -86,8 +96,7 @@ node qontak.js list-templates
 
 Checks:
 ```bash
-npm run lint        # syntax check (node --check)
-npx tsc --noEmit    # TypeScript compiler pass over JS
+npm run lint        # npx tsc --noEmit
 ```
 
 On first run, scan the QR code printed in the terminal to pair your WhatsApp session.

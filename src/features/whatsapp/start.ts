@@ -333,10 +333,51 @@ function determineServiceDeskGroupByRole(role: string): string {
   return 'ICT System and Support';
 }
 
-function renderTechnicianLine(c: TechnicianContact): string {
+function truncateText(value: string, maxLen: number): string {
+  if (value.length <= maxLen) return value;
+  if (maxLen <= 3) return value.slice(0, maxLen);
+  return `${value.slice(0, maxLen - 3)}...`;
+}
+
+function formatTwoColumnRows(rows: Array<{ label: string; value: string }>): string {
+  const maxLabel = rows.reduce((m, r) => Math.max(m, r.label.length), 0);
+  return rows.map((r) => `${r.label.padEnd(maxLabel)}  ${r.value}`).join('\n');
+}
+
+function renderTechnicianDetails(c: TechnicianContact): string {
   const email = c.email ?? 'N/A';
   const gender = c.gender ?? 'N/A';
-  return `#${c.id} - ${c.name}\nRole: ${c.technician}\nICT Name: ${c.ict_name}\nPhone: ${c.phone}\nEmail: ${email}\nGender: ${gender}`;
+  const rows = formatTwoColumnRows([
+    { label: 'ID', value: String(c.id) },
+    { label: 'Name', value: c.name },
+    { label: 'ICT Name', value: c.ict_name },
+    { label: 'Role', value: c.technician },
+    { label: 'Phone', value: c.phone },
+    { label: 'Email', value: email },
+    { label: 'Gender', value: gender },
+  ]);
+  return `\`\`\`\n${rows}\n\`\`\``;
+}
+
+function renderTechnicianTable(contacts: TechnicianContact[]): string {
+  const rows = contacts.map((c) => ({
+    id: String(c.id),
+    name: truncateText(c.name, 28),
+    role: truncateText(c.technician, 28),
+    phone: truncateText(c.phone, 18),
+  }));
+
+  const maxId = Math.max(2, ...rows.map((r) => r.id.length));
+  const maxName = Math.max(4, ...rows.map((r) => r.name.length));
+  const maxRole = Math.max(4, ...rows.map((r) => r.role.length));
+  const maxPhone = Math.max(5, ...rows.map((r) => r.phone.length));
+
+  const header = `${'ID'.padEnd(maxId)}  ${'Name'.padEnd(maxName)}  ${'Role'.padEnd(maxRole)}  ${'Phone'.padEnd(maxPhone)}`;
+  const lines = rows.map(
+    (r) => `${r.id.padEnd(maxId)}  ${r.name.padEnd(maxName)}  ${r.role.padEnd(maxRole)}  ${r.phone.padEnd(maxPhone)}`
+  );
+
+  return `\`\`\`\n${[header, ...lines].join('\n')}\n\`\`\``;
 }
 
 function isUpdateField(value: string): value is TechnicianContactUpdateField {
@@ -575,8 +616,9 @@ async function handleCommand(args: {
           return;
         }
 
-        const lines = contacts.map((c) => `#${c.id} - ${c.name} (${c.technician}) - ${c.phone}`);
-        await sock.sendMessage(remoteJid, { text: `*Technicians* (${contacts.length})\n\n${lines.join('\n')}` });
+        await sock.sendMessage(remoteJid, {
+          text: `*Technicians* (${contacts.length})\n\n${renderTechnicianTable(contacts)}`,
+        });
         return;
       }
 
@@ -593,8 +635,9 @@ async function handleCommand(args: {
           return;
         }
 
-        const lines = results.map((c) => `#${c.id} - ${c.name} (${c.technician}) - ${c.phone}`);
-        await sock.sendMessage(remoteJid, { text: `*Matches* (${results.length})\n\n${lines.join('\n')}` });
+        await sock.sendMessage(remoteJid, {
+          text: `*Technician Search Results*\nQuery: ${query}\nMatches: ${results.length}\n\n${renderTechnicianTable(results)}`,
+        });
         return;
       }
 
@@ -612,7 +655,9 @@ async function handleCommand(args: {
           return;
         }
 
-        await sock.sendMessage(remoteJid, { text: renderTechnicianLine(contact) });
+        await sock.sendMessage(remoteJid, {
+          text: `*Technician Details*\n\n${renderTechnicianDetails(contact)}`,
+        });
         return;
       }
 
@@ -641,7 +686,9 @@ async function handleCommand(args: {
           gender: gender ? gender : null,
         });
 
-        await sock.sendMessage(remoteJid, { text: `Technician added.\n\n${renderTechnicianLine(created)}` });
+        await sock.sendMessage(remoteJid, {
+          text: `Technician added.\n\n${renderTechnicianDetails(created)}`,
+        });
         return;
       }
 
@@ -664,7 +711,9 @@ async function handleCommand(args: {
           return;
         }
 
-        await sock.sendMessage(remoteJid, { text: `Technician updated.\n\n${renderTechnicianLine(updated)}` });
+        await sock.sendMessage(remoteJid, {
+          text: `Technician updated.\n\n${renderTechnicianDetails(updated)}`,
+        });
         return;
       }
 
