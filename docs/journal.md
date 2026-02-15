@@ -443,3 +443,9 @@
   - Added group lookup caching and backoff for `/send-group-message` when resolving groups by name.
   - Rate-overlimit now returns HTTP 429 instead of crashing the Node process.
   - Other group lookup failures now return HTTP 503/422 with a clear message.
+
+## [2026-02-15 23:30:55 WITA] Always restart container on crash
+- Change:
+  - Updated docker-compose restart policy to `restart: always`.
+- Impact:
+  - Container restarts automatically whenever the process exits.
