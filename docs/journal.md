@@ -307,6 +307,15 @@
 ## [2026-02-15 16:21:07 WITA] Skip ServiceDesk category AI on OpenAI auth errors
 - Change:
   - Service category AI suggestion no longer fails the webhook when OpenAI returns 401.
+
+## [2026-02-16 00:29:16 WITA] Add private-chat reply gateway with auto-mute
+- Change:
+  - Added a private-chat reply gateway that can choose to reply, skip, or auto-mute.
+  - Added `/unmute` to re-enable replies after auto-mute.
+  - Aligned inbound media attachments to type-specific base64 keys (imageData/videoData/audioData/documentData).
+- Impact:
+  - Reduces unwanted auto-replies in private chats.
+  - Improves n8n payload consistency for media attachments.
   - Added `SERVICE_CATEGORY_AI_ENABLED=false` option to disable category AI.
 
 ## [2026-02-15 16:29:25 WITA] Standardize ticketing WhatsApp notifications

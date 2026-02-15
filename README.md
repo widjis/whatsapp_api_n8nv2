@@ -14,6 +14,7 @@
 - Admin command: `/resetpassword` to update user password in Active Directory.
 - Ticket claim via reaction in configured groups (remove reaction to unclaim).
 - Auto service category suggestion for new tickets from webhook (requires `OPENAI_API_KEY`).
+- Private-chat reply gateway to reduce unwanted auto-replies (supports auto-mute + `/unmute`).
 
 ## Requirements
 - Node.js 18+
@@ -41,6 +42,13 @@ N8N_TIMEOUT=5000
 # Service category AI (optional)
 OPENAI_API_KEY=yourOpenAiKey
 SERVICE_CATEGORY_AI_ENABLED=true
+
+# Private reply gateway (optional)
+# If enabled, the bot can decide to reply, skip, or auto-mute in private chats.
+REPLY_GATEWAY_ENABLED=true
+REPLY_GATEWAY_AI_ENABLED=true
+REPLY_GATEWAY_MODEL=gpt-4o-mini
+REPLY_GATEWAY_AI_MAX_CHARS=900
 
 # Debug (optional)
 DEBUG_TICKET_REACTIONS=true
@@ -211,6 +219,7 @@ Notes:
 Built-in commands:
 - `/hi` – replies "Hello!"
 - `/help` – lists available commands
+- `/unmute` – re-enables auto-replies after the reply gateway auto-mutes you (private chats only).
 - `/resetpassword <username> <newPassword> [/change]` – username can be `sAMAccountName`, UPN/email, or CN/displayName (if uniquely matched). Resets AD password; optionally forces change at next logon when `/change` flag is present. Access restricted to `ALLOWED_PHONE_NUMBERS` (works in private chats and groups).
 - `/getbitlocker <hostname>` – looks up BitLocker recovery keys for a computer in Active Directory (searches by `cn` / `sAMAccountName`). Requires `LDAP_BASE_DN` (or `BASE_DN` / `BASE_OU`) plus LDAP bind settings.
 - `/getasset [type]` – summarizes assets from Snipe-IT by category. Requires `SNIPEIT_URL` and `SNIPEIT_TOKEN`.

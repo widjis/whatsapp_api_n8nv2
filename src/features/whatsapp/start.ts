@@ -3,6 +3,7 @@ import qrcode from 'qrcode';
 import path from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import OpenAI from 'openai';
 import {
   Browsers,
   DisconnectReason,
@@ -183,6 +184,181 @@ function isRecordValue(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+type ReplyGatewayAction = 'reply' | 'no_reply' | 'mute';
+
+type ReplyGatewayDecision = {
+  action: ReplyGatewayAction;
+  reason: string;
+};
+
+type ReplyMuteState = {
+  mutedAtIso: string;
+  reason: string;
+};
+
+const replyMuteStateBySender = new Map<string, ReplyMuteState>();
+
+const REPLY_GATEWAY_ENABLED = process.env.REPLY_GATEWAY_ENABLED !== 'false';
+const REPLY_GATEWAY_AI_ENABLED = process.env.REPLY_GATEWAY_AI_ENABLED !== 'false';
+const REPLY_GATEWAY_MODEL = (process.env.REPLY_GATEWAY_MODEL?.trim() || 'gpt-4o-mini').trim();
+
+function getReplyGatewaySenderKey(senderJid: string): string {
+  return extractPhoneDigitsFromJid(senderJid) ?? senderJid;
+}
+
+function normalizeGatewayText(text: string): string {
+  return text
+    .replace(/\u00A0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function decideReplyGatewayHeuristic(messageText: string, hasAttachment: boolean): ReplyGatewayDecision | null {
+  const normalized = normalizeGatewayText(messageText);
+  const lower = normalized.toLowerCase();
+
+  if (hasAttachment) return { action: 'reply', reason: 'has_attachment' };
+
+  const mutePatterns: RegExp[] = [
+    /\b(stop|stahp)\b.*\b(reply|replies|balas|jawab)\b/i,
+    /\b(don'?t|do not)\b\s+\b(reply|respond)\b/i,
+    /\bno\s+need\b\s+\b(to\s+)?(reply|respond)\b/i,
+    /\b(jangan|ga|gak|nggak)\s+\b(balas|jawab)\b/i,
+    /\b(jangan)\s+\b(ganggu|spam)\b/i,
+    /\b(annoying|spammy)\b/i,
+    /\b(shut\s*up)\b/i,
+    /\b(diam)\b/i,
+    /\b(berisik)\b/i,
+  ];
+  if (mutePatterns.some((p) => p.test(lower))) return { action: 'mute', reason: 'explicit_stop' };
+
+  const shortAcks = new Set<string>([
+    'ok',
+    'oke',
+    'okay',
+    'k',
+    'sip',
+    'siap',
+    'noted',
+    'thanks',
+    'thank you',
+    'thx',
+    'makasih',
+    'terima kasih',
+    'ty',
+  ]);
+  if (shortAcks.has(lower)) return { action: 'no_reply', reason: 'ack' };
+
+  if (/[?？]/.test(normalized)) return { action: 'reply', reason: 'question_mark' };
+  if (/\b(how|why|what|when|where|who|which)\b/i.test(lower)) return { action: 'reply', reason: 'question_word' };
+  if (/\b(bagaimana|kenapa|apa|kapan|dimana|siapa|yang mana)\b/i.test(lower)) return { action: 'reply', reason: 'question_word_id' };
+
+  if (normalized.length <= 2) return { action: 'no_reply', reason: 'very_short' };
+  return null;
+}
+
+function getOptionalEnvString(key: string): string | null {
+  const raw = process.env[key];
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function getOpenAiClientOrNull(): OpenAI | null {
+  const apiKey = getOptionalEnvString('OPENAI_API_KEY');
+  if (!apiKey) return null;
+  return new OpenAI({ apiKey });
+}
+
+function tryParseJsonObject(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function isReplyGatewayAction(value: unknown): value is ReplyGatewayAction {
+  return value === 'reply' || value === 'no_reply' || value === 'mute';
+}
+
+function coerceGatewayDecision(value: unknown): ReplyGatewayDecision | null {
+  if (!isRecordValue(value)) return null;
+  const action = value.action;
+  const reason = value.reason;
+  if (!isReplyGatewayAction(action)) return null;
+  if (typeof reason !== 'string') return null;
+  return { action, reason };
+}
+
+async function decideReplyGatewayAi(messageText: string, hasAttachment: boolean): Promise<ReplyGatewayDecision | null> {
+  if (!REPLY_GATEWAY_ENABLED || !REPLY_GATEWAY_AI_ENABLED) return null;
+  if (hasAttachment) return { action: 'reply', reason: 'has_attachment' };
+
+  const openai = getOpenAiClientOrNull();
+  if (!openai) return null;
+
+  const maxChars = readPositiveIntEnv('REPLY_GATEWAY_AI_MAX_CHARS', 900);
+  const content = normalizeGatewayText(messageText).slice(0, maxChars);
+  if (content.length === 0) return { action: 'no_reply', reason: 'empty' };
+
+  const system =
+    'You are a WhatsApp bot reply gateway. Decide whether the bot should reply to the user message. ' +
+    'If the user is annoyed or explicitly asks to stop, choose action "mute" (stop replying until /unmute). ' +
+    'If no response is needed (acknowledgment, filler), choose "no_reply". Otherwise choose "reply". ' +
+    'Return JSON only with keys: action, reason.';
+  const user = `MESSAGE:\n${content}`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: REPLY_GATEWAY_MODEL,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature: 0,
+    });
+
+    const raw = completion.choices[0]?.message?.content;
+    if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+    const parsed = tryParseJsonObject(raw.trim());
+    return coerceGatewayDecision(parsed);
+  } catch {
+    return null;
+  }
+}
+
+async function applyReplyGateway(args: {
+  senderNumber: string;
+  isGroup: boolean;
+  messageText: string;
+  attachments: N8nAttachment[];
+  initialShouldReply: boolean;
+}): Promise<{ shouldReply: boolean }> {
+  if (!REPLY_GATEWAY_ENABLED) return { shouldReply: args.initialShouldReply };
+  if (args.isGroup) return { shouldReply: args.initialShouldReply };
+  if (!args.initialShouldReply) return { shouldReply: false };
+
+  const senderKey = getReplyGatewaySenderKey(args.senderNumber);
+  const existingMute = replyMuteStateBySender.get(senderKey);
+  if (existingMute) return { shouldReply: false };
+
+  const hasAttachment = args.attachments.length > 0;
+  const heuristic = decideReplyGatewayHeuristic(args.messageText, hasAttachment);
+  const decision = heuristic ?? (await decideReplyGatewayAi(args.messageText, hasAttachment));
+  if (!decision) return { shouldReply: true };
+
+  if (decision.action === 'mute') {
+    replyMuteStateBySender.set(senderKey, {
+      mutedAtIso: new Date().toISOString(),
+      reason: decision.reason,
+    });
+    return { shouldReply: false };
+  }
+
+  return { shouldReply: decision.action === 'reply' };
+}
+
 function extractPresenceItems(payloadUnknown: unknown): Array<{ remoteJid: string; participantJid: string; presence: string }> {
   if (!isRecordValue(payloadUnknown)) return [];
   const id = payloadUnknown.id;
@@ -280,6 +456,14 @@ async function flushMessageBuffer(key: string): Promise<void> {
     for (const att of item.attachments) combinedAttachments.push(att);
   }
 
+  const gateway = await applyReplyGateway({
+    senderNumber: first.senderNumber,
+    isGroup: first.isGroup,
+    messageText: combinedText || first.text,
+    attachments: combinedAttachments,
+    initialShouldReply: first.shouldReply,
+  });
+
   const mentionedSet = new Set<string>();
   for (const item of buffer.items) {
     for (const jid of item.mentionedJids) mentionedSet.add(jid);
@@ -299,7 +483,7 @@ async function flushMessageBuffer(key: string): Promise<void> {
     messageType: first.messageType,
     mentionedJids: combinedMentionedJids,
     quotedMessage: first.quotedMessage,
-    shouldReply: first.shouldReply,
+    shouldReply: gateway.shouldReply,
     deps,
   });
 }
@@ -1497,6 +1681,17 @@ async function handleCommand(args: {
   const [command] = messageContent.trim().split(/\s+/);
 
   switch (command?.toLowerCase()) {
+    case '/unmute': {
+      if (remoteJid.endsWith('@g.us')) {
+        await sock.sendMessage(remoteJid, { text: 'Use /unmute in a private chat.' });
+        return;
+      }
+
+      const senderKey = getReplyGatewaySenderKey(remoteJid);
+      const existed = replyMuteStateBySender.delete(senderKey);
+      await sock.sendMessage(remoteJid, { text: existed ? 'Auto-replies enabled.' : 'Auto-replies already enabled.' });
+      return;
+    }
     case '/hi':
       await sock.sendMessage(remoteJid, { text: 'Hello!' });
       return;
@@ -1926,6 +2121,14 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
 
         if (buffered) continue;
 
+        const gateway = await applyReplyGateway({
+          senderNumber,
+          isGroup,
+          messageText: messageContent,
+          attachments: parsed.attachments,
+          initialShouldReply: shouldReply,
+        });
+
         await handleMessage({
           sock: currentSock,
           msg,
@@ -1935,7 +2138,7 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
           messageType: parsed.messageType,
           mentionedJids: parsed.mentionedJids,
           quotedMessage: parsed.quotedMessage,
-          shouldReply,
+          shouldReply: gateway.shouldReply,
           deps,
         });
       }
