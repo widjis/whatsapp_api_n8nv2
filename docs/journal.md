@@ -422,3 +422,18 @@
 - Change:
   - URL-send mode now falls back to base64 if `PUBLIC_BASE_URL` is not set.
   - Added explicit warnings when URL mode is requested but unavailable.
+
+## [2026-02-15 21:54:12 WITA] Match reference media payload keys to reduce n8n payload size
+- Change:
+  - Stopped duplicating base64 into `dataBase64` for media attachments.
+  - Media base64 is now only sent in legacy keys (`imageData`, `videoData`, `audioData`, `documentData`) like reference/server.js.
+
+## [2026-02-15 22:12:39 WITA] Add two-phase n8n flow for video analysis
+- Change:
+  - For video messages, send an initial caption-only webhook (`processingPhase=ack`) to produce a “please wait” reply.
+  - Then send the full media payload (`processingPhase=analysis`) to return the actual analysis result.
+
+## [2026-02-15 22:16:35 WITA] Improve video ack prompt to avoid confusing first replies
+- Change:
+  - Ack-phase message now includes explicit instruction that video is still being analyzed.
+  - Prevents the first reply from treating the caption as a normal question.

@@ -994,9 +994,9 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
         width: Number(actualQuoted.imageMessage.width ?? 0) || null,
         height: Number(actualQuoted.imageMessage.height ?? 0) || null,
         ptt: null,
-        dataBase64,
+        dataBase64: null,
         imageData: dataBase64,
-        error: dataBase64 ? null : 'Failed to download quoted image',
+        error: buffer ? null : 'Failed to download quoted image',
       };
     } else if (actualQuoted.videoMessage) {
       quotedText = actualQuoted.videoMessage.caption || 'Video';
@@ -1023,7 +1023,7 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
         writeFileSync(filePath, buffer);
       }
       const fileUrl = filePath && publicBaseUrl ? buildUploadsFileUrl(publicBaseUrl, fileName) : null;
-      const dataBase64 = !shouldSendAsUrl && buffer ? buffer.toString('base64') : null;
+      const videoData = !shouldSendAsUrl && buffer ? buffer.toString('base64') : null;
       quotedMediaInfo = {
         type: 'video',
         caption: actualQuoted.videoMessage.caption ?? '',
@@ -1034,8 +1034,8 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
         width: Number(actualQuoted.videoMessage.width ?? 0) || null,
         height: Number(actualQuoted.videoMessage.height ?? 0) || null,
         ptt: null,
-        dataBase64,
-        videoData: dataBase64,
+        dataBase64: null,
+        videoData,
         fileUrl,
         filePath,
         error: buffer ? null : 'Failed to download quoted video',
@@ -1055,9 +1055,9 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
         width: null,
         height: null,
         ptt: Boolean(actualQuoted.audioMessage.ptt),
-        dataBase64,
+        dataBase64: null,
         audioData: dataBase64,
-        error: dataBase64 ? null : 'Failed to download quoted audio',
+        error: buffer ? null : 'Failed to download quoted audio',
       };
     } else if (actualQuoted.documentMessage) {
       quotedText = actualQuoted.documentMessage.caption || actualQuoted.documentMessage.fileName || 'Document';
@@ -1142,9 +1142,9 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       width: Number(rawMessage.imageMessage.width ?? 0) || null,
       height: Number(rawMessage.imageMessage.height ?? 0) || null,
       ptt: null,
-      dataBase64,
+      dataBase64: null,
       imageData: dataBase64,
-      error: dataBase64 ? null : 'Failed to download image',
+      error: buffer ? null : 'Failed to download image',
     };
     return { text: caption || 'Image message received', attachments: [attachment], messageType: 'image', mentionedJids, quotedMessage };
   }
@@ -1173,7 +1173,7 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       writeFileSync(filePath, buffer);
     }
     const fileUrl = filePath && publicBaseUrl ? buildUploadsFileUrl(publicBaseUrl, fileName) : null;
-    const dataBase64 = !shouldSendAsUrl && buffer ? buffer.toString('base64') : null;
+    const videoData = !shouldSendAsUrl && buffer ? buffer.toString('base64') : null;
     const attachment: N8nAttachment = {
       type: 'video',
       caption,
@@ -1184,8 +1184,8 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       width: Number(rawMessage.videoMessage.width ?? 0) || null,
       height: Number(rawMessage.videoMessage.height ?? 0) || null,
       ptt: null,
-      dataBase64,
-      videoData: dataBase64,
+      dataBase64: null,
+      videoData,
       fileUrl,
       filePath,
       error: buffer ? null : 'Failed to download video',
@@ -1207,9 +1207,9 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       width: null,
       height: null,
       ptt: isPtt,
-      dataBase64,
+      dataBase64: null,
       audioData: dataBase64,
-      error: dataBase64 ? null : 'Failed to download audio',
+      error: buffer ? null : 'Failed to download audio',
     };
     return {
       text: isPtt ? 'Voice message received' : 'Audio message received',
@@ -1234,9 +1234,9 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       width: null,
       height: null,
       ptt: null,
-      dataBase64,
+      dataBase64: null,
       documentData: dataBase64,
-      error: dataBase64 ? null : 'Failed to download document',
+      error: buffer ? null : 'Failed to download document',
     };
     const fallbackText = attachment.fileName ? `Document: ${attachment.fileName}` : 'Document message received';
     return { text: caption || fallbackText, attachments: [attachment], messageType: 'document', mentionedJids, quotedMessage };
@@ -1401,33 +1401,86 @@ async function handleMessage(args: {
   const videoHasInlineData = media?.type === 'video' && Boolean(media.videoData ?? media.dataBase64);
   const effectiveTimeoutMs = videoHasInlineData && mediaSendMode !== 'file_url' ? Math.max(baseTimeoutMs, 60_000) : baseTimeoutMs;
 
+  type N8nArgs = Parameters<typeof handleN8nIntegration>[0];
+  const basePayload: N8nArgs['payload'] = {
+    message: messageContent,
+    from: senderNumber,
+    fromNumber: senderDigits ?? senderNumber,
+    replyTo: remoteJid,
+    pushName,
+    isGroup,
+    groupId: isGroup ? remoteJid : null,
+    timestamp: new Date().toISOString(),
+    messageId: msg.key?.id,
+    attachments: attachments.length > 0 ? attachments : undefined,
+    attachmentCount: attachments.length,
+    hasAttachment,
+    attachmentType,
+    mediaInfo: directMediaInfo,
+    media,
+    messageType: args.messageType ?? null,
+    mentionedJids: args.mentionedJids ?? [],
+    quotedMessage: args.quotedMessage ?? null,
+    botNumber,
+    botLid: null,
+    shouldReply,
+    adUser,
+    processingPhase: 'analysis',
+  };
+
+  const isVideo = (args.messageType ?? null) === 'video' || media?.type === 'video';
+  if (shouldReply && isVideo) {
+    const ackTimeoutMs = readPositiveIntEnv('N8N_VIDEO_ACK_TIMEOUT_MS', 8_000);
+    const caption = messageContent.trim();
+    const seconds = typeof media?.seconds === 'number' && media.seconds > 0 ? media.seconds : null;
+    const defaultAckTextFromEnv = process.env.N8N_VIDEO_ACK_FALLBACK_TEXT;
+    const defaultAckText =
+      defaultAckTextFromEnv && defaultAckTextFromEnv.trim().length > 0
+        ? defaultAckTextFromEnv
+        : seconds
+          ? `Video received (${seconds}s). Please wait while I analyze it.`
+          : 'Video received. Please wait while I analyze it.';
+
+    const ackInstructionLines: string[] = [
+      'SYSTEM:',
+      'The user just sent a VIDEO message. Video analysis will be processed in a follow-up request.',
+      'TASK:',
+      'Reply with a short acknowledgment telling the user you are analyzing the video and they should wait.',
+      'Do not ask follow-up questions. Do not attempt to analyze the video yet.',
+    ];
+    if (caption.length > 0) {
+      ackInstructionLines.push('USER_CAPTION_OR_MESSAGE:', caption);
+    }
+    if (seconds) {
+      ackInstructionLines.push('VIDEO_DURATION_SECONDS:', String(seconds));
+    }
+    const ackMessage = ackInstructionLines.join('\n');
+
+    const ackPayload: N8nArgs['payload'] = {
+      ...basePayload,
+      message: ackMessage,
+      processingPhase: 'ack',
+      attachments: undefined,
+      attachmentCount: 0,
+      hasAttachment: false,
+      attachmentType: null,
+      mediaInfo: null,
+      media: null,
+    };
+
+    await handleN8nIntegration({
+      sock,
+      remoteJid,
+      payload: ackPayload,
+      config: { webhookUrl: deps.n8nWebhookUrl, timeoutMs: ackTimeoutMs },
+      fallback: { kind: 'text', text: defaultAckText },
+    });
+  }
+
   await handleN8nIntegration({
     sock,
     remoteJid,
-    payload: {
-      message: messageContent,
-      from: senderNumber,
-      fromNumber: senderDigits ?? senderNumber,
-      replyTo: remoteJid,
-      pushName,
-      isGroup,
-      groupId: isGroup ? remoteJid : null,
-      timestamp: new Date().toISOString(),
-      messageId: msg.key?.id,
-      attachments: attachments.length > 0 ? attachments : undefined,
-      attachmentCount: attachments.length,
-      hasAttachment,
-      attachmentType,
-      mediaInfo: directMediaInfo,
-      media,
-      messageType: args.messageType ?? null,
-      mentionedJids: args.mentionedJids ?? [],
-      quotedMessage: args.quotedMessage ?? null,
-      botNumber,
-      botLid: null,
-      shouldReply,
-      adUser,
-    },
+    payload: basePayload,
     config: { webhookUrl: deps.n8nWebhookUrl, timeoutMs: effectiveTimeoutMs },
   });
 }

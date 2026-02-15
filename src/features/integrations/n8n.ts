@@ -56,6 +56,7 @@ type N8nPayload = {
   groupId: string | null;
   timestamp: string;
   messageId: string | null | undefined;
+  processingPhase?: 'ack' | 'analysis';
   attachments?: N8nAttachment[];
   attachmentCount?: number;
   hasAttachment?: boolean;
@@ -70,6 +71,11 @@ type N8nPayload = {
   shouldReply?: boolean;
   adUser?: N8nAdUser | null;
 };
+
+type N8nFallback =
+  | { kind: 'default' }
+  | { kind: 'none' }
+  | { kind: 'text'; text: string };
 
 type N8nConfig = {
   webhookUrl: string;
@@ -119,6 +125,7 @@ function summarizePayload(payload: N8nPayload): Record<string, unknown> {
   const media = payload.media ?? null;
   return {
     messageId: payload.messageId ?? null,
+    processingPhase: payload.processingPhase ?? null,
     from: payload.from,
     fromNumber: payload.fromNumber ?? null,
     replyTo: payload.replyTo ?? null,
@@ -309,8 +316,10 @@ export async function handleN8nIntegration(args: {
   remoteJid: string;
   payload: N8nPayload;
   config: N8nConfig;
+  fallback?: N8nFallback;
 }): Promise<void> {
   const { sock, remoteJid, payload, config } = args;
+  const fallback: N8nFallback = args.fallback ?? { kind: 'default' };
 
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const startedMs = Date.now();
@@ -355,6 +364,11 @@ export async function handleN8nIntegration(args: {
       '[n8n] reply:fallback',
       JSON.stringify({ requestId, reason: 'no_reply_text', elapsedMs: Date.now() - startedMs, summary: summarizePayload(payload) })
     );
+    if (fallback.kind === 'none') return;
+    if (fallback.kind === 'text') {
+      await sendReplyWithTyping({ sock, remoteJid, text: fallback.text, isGroup: payload.isGroup });
+      return;
+    }
     await sendDefaultReply({ sock, remoteJid, isGroup: payload.isGroup });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
@@ -365,6 +379,11 @@ export async function handleN8nIntegration(args: {
     );
     const shouldReply = payload.shouldReply !== false;
     if (!shouldReply) return;
+    if (fallback.kind === 'none') return;
+    if (fallback.kind === 'text') {
+      await sendReplyWithTyping({ sock, remoteJid, text: fallback.text, isGroup: payload.isGroup });
+      return;
+    }
     await sendDefaultReply({ sock, remoteJid, isGroup: payload.isGroup });
   }
 }
