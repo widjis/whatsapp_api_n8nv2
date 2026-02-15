@@ -405,3 +405,20 @@
   - Reaction claim/unclaim now handled only via `messages.reaction` to prevent duplicate processing.
   - Claim/unclaim now uses a single ServiceDesk update call including group/technician/status fields.
   - Unclaim restores the ticket to its previous status when available.
+
+## [2026-02-15 21:45:30 WITA] Add file URL fallback for large WhatsApp video media to n8n
+- Change:
+  - Added `/uploads` static route (IP-restricted) for n8n to fetch large media files.
+  - Added `fileUrl`/`filePath` fields and auto mode to send videos as URL instead of base64.
+  - Increased n8n timeout for inline-base64 video payloads.
+
+## [2026-02-15 21:47:51 WITA] Improve n8n logs for webhook failures and fallback replies
+- Change:
+  - Added request-scoped n8n logs with payload summaries and JSON payload size.
+  - Included HTTP error body snippets for non-2xx fetch responses.
+  - Logged explicit fallback reasons when replying with the default “AI not available” message.
+
+## [2026-02-15 21:49:36 WITA] Prevent dropping video payload when PUBLIC_BASE_URL is missing
+- Change:
+  - URL-send mode now falls back to base64 if `PUBLIC_BASE_URL` is not set.
+  - Added explicit warnings when URL mode is requested but unavailable.

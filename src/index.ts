@@ -86,6 +86,13 @@ const checkIp = createCheckIpMiddleware({
   alertReceiverJid: '6285712612218@s.whatsapp.net',
 });
 
+app.use('/uploads', (req, res, next) => {
+  const result = checkIp(req, res, () => next());
+  if (result instanceof Promise) {
+    void result.catch(next);
+  }
+}, express.static(uploadsDir));
+
 registerMessageRoutes({
   app,
   upload,

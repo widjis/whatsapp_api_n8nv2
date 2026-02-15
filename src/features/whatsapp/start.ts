@@ -1,7 +1,8 @@
 import { pino } from 'pino';
 import qrcode from 'qrcode';
 import path from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import {
   Browsers,
   DisconnectReason,
@@ -49,6 +50,60 @@ const PRESENCE_BUFFER_MAX_TIMEOUT_MS = Number(process.env.PRESENCE_BUFFER_MAX_TI
 const PRESENCE_BUFFER_STOP_DELAY_MS = Number(process.env.PRESENCE_BUFFER_STOP_DELAY ?? '2000');
 const PRESENCE_SUBSCRIPTION_ENABLED = process.env.PRESENCE_SUBSCRIPTION_ENABLED === 'true';
 const DEBUG_TICKET_REACTIONS = process.env.DEBUG_TICKET_REACTIONS === 'true';
+
+type MediaSendMode = 'base64' | 'file_url' | 'auto';
+
+function readMediaSendMode(): MediaSendMode {
+  const raw = process.env.N8N_MEDIA_SEND_MODE;
+  if (!raw) return 'auto';
+  const v = raw.trim().toLowerCase();
+  if (v === 'base64' || v === 'file_url' || v === 'auto') return v;
+  return 'auto';
+}
+
+function readPositiveIntEnv(key: string, fallback: number): number {
+  const raw = process.env[key];
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  const i = Math.floor(n);
+  if (i <= 0) return fallback;
+  return i;
+}
+
+function resolveUploadsDir(): string {
+  const rootDir = process.cwd();
+  const dataRaw = process.env.DATA_DIR;
+  const dataDir = dataRaw
+    ? path.isAbsolute(dataRaw) ? dataRaw : path.join(rootDir, dataRaw)
+    : rootDir;
+  return path.join(dataDir, 'uploads');
+}
+
+function resolvePublicBaseUrl(): string | null {
+  const raw = process.env.PUBLIC_BASE_URL;
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+}
+
+function guessFileExtensionFromMime(mime: string, fallback: string): string {
+  const m = mime.toLowerCase();
+  if (m.includes('video/mp4')) return 'mp4';
+  if (m.includes('video/quicktime')) return 'mov';
+  if (m.includes('image/png')) return 'png';
+  if (m.includes('image/webp')) return 'webp';
+  if (m.includes('image/jpeg')) return 'jpg';
+  if (m.includes('audio/ogg')) return 'ogg';
+  if (m.includes('audio/mpeg')) return 'mp3';
+  if (m.includes('application/pdf')) return 'pdf';
+  return fallback;
+}
+
+function buildUploadsFileUrl(baseUrl: string, fileName: string): string {
+  return `${baseUrl}/uploads/${encodeURIComponent(fileName)}`;
+}
 
 type TicketReactionDebugPayload = {
   event: 'claim' | 'unclaim';
@@ -898,15 +953,15 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
 
     const actualQuoted = unwrapEphemeralMessage(quotedRaw) ?? quotedRaw;
 
-    async function downloadBase64FromMessage(message: proto.IMessage): Promise<string | null> {
+    async function downloadBufferFromMessage(message: proto.IMessage): Promise<Buffer | null> {
       try {
-        const msgForDownload = { key: args.msg.key, message } as unknown as WAMessage;
+        const msgForDownload = { message } as unknown as WAMessage;
         const downloaded = await downloadMediaMessage(msgForDownload, 'buffer', {}, {
           logger: mediaLogger,
           reuploadRequest: args.sock.updateMediaMessage,
         });
         const buffer = Buffer.isBuffer(downloaded) ? downloaded : Buffer.from(downloaded as Uint8Array);
-        return buffer.toString('base64');
+        return buffer;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error('Error downloading quoted media:', message);
@@ -927,7 +982,8 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
     } else if (actualQuoted.imageMessage) {
       quotedText = actualQuoted.imageMessage.caption || 'Image';
       quotedType = 'image';
-      const dataBase64 = await downloadBase64FromMessage({ imageMessage: actualQuoted.imageMessage });
+      const buffer = await downloadBufferFromMessage({ imageMessage: actualQuoted.imageMessage });
+      const dataBase64 = buffer ? buffer.toString('base64') : null;
       quotedMediaInfo = {
         type: 'image',
         caption: actualQuoted.imageMessage.caption ?? '',
@@ -945,11 +1001,33 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
     } else if (actualQuoted.videoMessage) {
       quotedText = actualQuoted.videoMessage.caption || 'Video';
       quotedType = 'video';
-      const dataBase64 = await downloadBase64FromMessage({ videoMessage: actualQuoted.videoMessage });
+      const buffer = await downloadBufferFromMessage({ videoMessage: actualQuoted.videoMessage });
+      const mediaSendMode = readMediaSendMode();
+      const maxBytes = readPositiveIntEnv('N8N_MEDIA_MAX_BYTES', 1_000_000);
+      const uploadsDir = resolveUploadsDir();
+      const publicBaseUrl = resolvePublicBaseUrl();
+      const preferUrl = mediaSendMode === 'file_url' || (mediaSendMode === 'auto' && buffer ? buffer.length > maxBytes : false);
+      const shouldSendAsUrl = preferUrl && Boolean(publicBaseUrl);
+      if (preferUrl && !publicBaseUrl) {
+        console.warn(
+          '[media] quoted_video:url_unavailable',
+          JSON.stringify({ reason: 'PUBLIC_BASE_URL not set', mediaSendMode, maxBytes, bufferBytes: buffer?.length ?? 0 })
+        );
+      }
+      const mime = actualQuoted.videoMessage.mimetype ?? 'video/mp4';
+      const ext = guessFileExtensionFromMime(mime, 'mp4');
+      const fileName = `${Date.now()}_${randomUUID()}.${ext}`;
+      const filePath = shouldSendAsUrl && buffer ? path.join(uploadsDir, fileName) : null;
+      if (filePath && buffer) {
+        mkdirSync(uploadsDir, { recursive: true });
+        writeFileSync(filePath, buffer);
+      }
+      const fileUrl = filePath && publicBaseUrl ? buildUploadsFileUrl(publicBaseUrl, fileName) : null;
+      const dataBase64 = !shouldSendAsUrl && buffer ? buffer.toString('base64') : null;
       quotedMediaInfo = {
         type: 'video',
         caption: actualQuoted.videoMessage.caption ?? '',
-        mimetype: actualQuoted.videoMessage.mimetype ?? 'video/mp4',
+        mimetype: mime,
         fileLength: Number(actualQuoted.videoMessage.fileLength ?? 0),
         fileName: null,
         seconds: Number(actualQuoted.videoMessage.seconds ?? 0) || 0,
@@ -958,12 +1036,15 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
         ptt: null,
         dataBase64,
         videoData: dataBase64,
-        error: dataBase64 ? null : 'Failed to download quoted video',
+        fileUrl,
+        filePath,
+        error: buffer ? null : 'Failed to download quoted video',
       };
     } else if (actualQuoted.audioMessage) {
       quotedText = actualQuoted.audioMessage.ptt ? 'Voice message' : 'Audio';
       quotedType = 'audio';
-      const dataBase64 = await downloadBase64FromMessage({ audioMessage: actualQuoted.audioMessage });
+      const buffer = await downloadBufferFromMessage({ audioMessage: actualQuoted.audioMessage });
+      const dataBase64 = buffer ? buffer.toString('base64') : null;
       quotedMediaInfo = {
         type: 'audio',
         caption: '',
@@ -1032,14 +1113,14 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
 
   const msgForDownload: WAMessage = { ...args.msg, key: args.msg.key, message: rawMessage };
 
-  async function downloadBase64(): Promise<string | null> {
+  async function downloadBuffer(): Promise<Buffer | null> {
     try {
       const downloaded = await downloadMediaMessage(msgForDownload, 'buffer', {}, {
         logger: mediaLogger,
         reuploadRequest: args.sock.updateMediaMessage,
       });
       const buffer = Buffer.isBuffer(downloaded) ? downloaded : Buffer.from(downloaded as Uint8Array);
-      return buffer.toString('base64');
+      return buffer;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('Error downloading media:', message);
@@ -1048,7 +1129,8 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
   }
 
   if (rawMessage.imageMessage) {
-    const dataBase64 = await downloadBase64();
+    const buffer = await downloadBuffer();
+    const dataBase64 = buffer ? buffer.toString('base64') : null;
     const caption = rawMessage.imageMessage.caption ?? '';
     const attachment: N8nAttachment = {
       type: 'image',
@@ -1068,12 +1150,34 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
   }
 
   if (rawMessage.videoMessage) {
-    const dataBase64 = await downloadBase64();
+    const buffer = await downloadBuffer();
     const caption = rawMessage.videoMessage.caption ?? '';
+    const mediaSendMode = readMediaSendMode();
+    const maxBytes = readPositiveIntEnv('N8N_MEDIA_MAX_BYTES', 1_000_000);
+    const uploadsDir = resolveUploadsDir();
+    const publicBaseUrl = resolvePublicBaseUrl();
+    const preferUrl = mediaSendMode === 'file_url' || (mediaSendMode === 'auto' && buffer ? buffer.length > maxBytes : false);
+    const shouldSendAsUrl = preferUrl && Boolean(publicBaseUrl);
+    if (preferUrl && !publicBaseUrl) {
+      console.warn(
+        '[media] video:url_unavailable',
+        JSON.stringify({ reason: 'PUBLIC_BASE_URL not set', mediaSendMode, maxBytes, bufferBytes: buffer?.length ?? 0 })
+      );
+    }
+    const mime = rawMessage.videoMessage.mimetype ?? 'video/mp4';
+    const ext = guessFileExtensionFromMime(mime, 'mp4');
+    const fileName = `${Date.now()}_${args.msg.key?.id ?? randomUUID()}.${ext}`;
+    const filePath = shouldSendAsUrl && buffer ? path.join(uploadsDir, fileName) : null;
+    if (filePath && buffer) {
+      mkdirSync(uploadsDir, { recursive: true });
+      writeFileSync(filePath, buffer);
+    }
+    const fileUrl = filePath && publicBaseUrl ? buildUploadsFileUrl(publicBaseUrl, fileName) : null;
+    const dataBase64 = !shouldSendAsUrl && buffer ? buffer.toString('base64') : null;
     const attachment: N8nAttachment = {
       type: 'video',
       caption,
-      mimetype: rawMessage.videoMessage.mimetype ?? 'video/mp4',
+      mimetype: mime,
       fileLength: Number(rawMessage.videoMessage.fileLength ?? 0),
       fileName: null,
       seconds: Number(rawMessage.videoMessage.seconds ?? 0) || 0,
@@ -1082,13 +1186,16 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       ptt: null,
       dataBase64,
       videoData: dataBase64,
-      error: dataBase64 ? null : 'Failed to download video',
+      fileUrl,
+      filePath,
+      error: buffer ? null : 'Failed to download video',
     };
     return { text: caption || 'Video message received', attachments: [attachment], messageType: 'video', mentionedJids, quotedMessage };
   }
 
   if (rawMessage.audioMessage) {
-    const dataBase64 = await downloadBase64();
+    const buffer = await downloadBuffer();
+    const dataBase64 = buffer ? buffer.toString('base64') : null;
     const isPtt = Boolean(rawMessage.audioMessage.ptt);
     const attachment: N8nAttachment = {
       type: 'audio',
@@ -1114,7 +1221,8 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
   }
 
   if (rawMessage.documentMessage) {
-    const dataBase64 = await downloadBase64();
+    const buffer = await downloadBuffer();
+    const dataBase64 = buffer ? buffer.toString('base64') : null;
     const caption = rawMessage.documentMessage.caption ?? '';
     const attachment: N8nAttachment = {
       type: 'document',
@@ -1288,6 +1396,11 @@ async function handleMessage(args: {
   const hasAttachment = Boolean(media);
   const attachmentType = media?.type ?? null;
 
+  const baseTimeoutMs = deps.n8nTimeoutMs;
+  const mediaSendMode = readMediaSendMode();
+  const videoHasInlineData = media?.type === 'video' && Boolean(media.videoData ?? media.dataBase64);
+  const effectiveTimeoutMs = videoHasInlineData && mediaSendMode !== 'file_url' ? Math.max(baseTimeoutMs, 60_000) : baseTimeoutMs;
+
   await handleN8nIntegration({
     sock,
     remoteJid,
@@ -1315,7 +1428,7 @@ async function handleMessage(args: {
       shouldReply,
       adUser,
     },
-    config: { webhookUrl: deps.n8nWebhookUrl, timeoutMs: deps.n8nTimeoutMs },
+    config: { webhookUrl: deps.n8nWebhookUrl, timeoutMs: effectiveTimeoutMs },
   });
 }
 

@@ -17,6 +17,8 @@ export type N8nAttachment = {
   videoData?: string | null;
   audioData?: string | null;
   documentData?: string | null;
+  fileUrl?: string | null;
+  filePath?: string | null;
   error: string | null;
   isQuoted?: boolean;
   source?: 'direct' | 'quoted';
@@ -73,6 +75,77 @@ type N8nConfig = {
   webhookUrl: string;
   timeoutMs: number;
 };
+
+const N8N_DEBUG = process.env.N8N_DEBUG === 'true';
+
+function truncate(value: string, maxLen: number): string {
+  if (value.length <= maxLen) return value;
+  if (maxLen <= 3) return value.slice(0, maxLen);
+  return `${value.slice(0, maxLen - 3)}...`;
+}
+
+function safeJsonStringify(value: unknown): string {
+  const visited = new WeakSet<object>();
+  return JSON.stringify(value, (_k, v: unknown) => {
+    if (!v || typeof v !== 'object') return v;
+    if (visited.has(v as object)) return '[Circular]';
+    visited.add(v as object);
+    return v;
+  });
+}
+
+function summarizeAttachment(a: N8nAttachment): Record<string, unknown> {
+  return {
+    type: a.type,
+    mimetype: a.mimetype,
+    fileLength: a.fileLength,
+    seconds: a.seconds,
+    width: a.width,
+    height: a.height,
+    ptt: a.ptt,
+    isQuoted: a.isQuoted,
+    source: a.source,
+    quotedFrom: a.quotedFrom,
+    quotedMessageId: a.quotedMessageId,
+    fileUrl: a.fileUrl ?? null,
+    hasBase64: Boolean(a.dataBase64 ?? a.imageData ?? a.videoData ?? a.audioData ?? a.documentData),
+    base64Len: (a.dataBase64 ?? a.imageData ?? a.videoData ?? a.audioData ?? a.documentData)?.length ?? 0,
+    error: a.error,
+  };
+}
+
+function summarizePayload(payload: N8nPayload): Record<string, unknown> {
+  const attachments = payload.attachments ?? [];
+  const media = payload.media ?? null;
+  return {
+    messageId: payload.messageId ?? null,
+    from: payload.from,
+    fromNumber: payload.fromNumber ?? null,
+    replyTo: payload.replyTo ?? null,
+    pushName: payload.pushName,
+    isGroup: payload.isGroup,
+    groupId: payload.groupId,
+    timestamp: payload.timestamp,
+    shouldReply: payload.shouldReply !== false,
+    messageType: payload.messageType ?? null,
+    mentionedCount: payload.mentionedJids?.length ?? 0,
+    messagePreview: truncate(payload.message ?? '', 180),
+    attachmentCount: payload.attachmentCount ?? attachments.length,
+    hasAttachment: payload.hasAttachment ?? (Boolean(media) || attachments.length > 0),
+    attachmentType: payload.attachmentType ?? (media?.type ?? null),
+    media: media ? summarizeAttachment(media) : null,
+    firstAttachment: attachments[0] ? summarizeAttachment(attachments[0]) : null,
+    quotedMessage: payload.quotedMessage
+      ? {
+          type: payload.quotedMessage.type,
+          participant: payload.quotedMessage.participant,
+          messageId: payload.quotedMessage.messageId,
+          textPreview: truncate(payload.quotedMessage.text, 180),
+          media: payload.quotedMessage.mediaInfo ? summarizeAttachment(payload.quotedMessage.mediaInfo) : null,
+        }
+      : null,
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -183,7 +256,8 @@ async function postHttpsJson(args: {
           return;
         }
 
-        reject(new Error(`HTTP ${res.statusCode ?? 0}: ${res.statusMessage ?? ''}`));
+        const snippet = responseData.length > 800 ? `${responseData.slice(0, 800)}...` : responseData;
+        reject(new Error(`HTTP ${res.statusCode ?? 0}: ${res.statusMessage ?? ''}${snippet ? ` | body: ${snippet}` : ''}`));
       });
     });
 
@@ -213,7 +287,14 @@ async function postFetchJson(args: { url: string; payload: unknown }): Promise<u
   });
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    let bodyText = '';
+    try {
+      bodyText = await response.text();
+    } catch {
+      bodyText = '';
+    }
+    const snippet = bodyText.length > 800 ? `${bodyText.slice(0, 800)}...` : bodyText;
+    throw new Error(`HTTP ${response.status}: ${response.statusText}${snippet ? ` | body: ${snippet}` : ''}`);
   }
 
   const contentType = response.headers.get('content-type') ?? '';
@@ -231,26 +312,57 @@ export async function handleN8nIntegration(args: {
 }): Promise<void> {
   const { sock, remoteJid, payload, config } = args;
 
+  const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const startedMs = Date.now();
+  const payloadBytes = Buffer.byteLength(safeJsonStringify(payload));
+
   const n8nEnabled = process.env.N8N_ENABLED ? process.env.N8N_ENABLED === 'true' : true;
   if (!n8nEnabled) return;
 
   try {
+    if (N8N_DEBUG) {
+      console.log(
+        '[n8n] request:start',
+        JSON.stringify({ requestId, webhookUrl: config.webhookUrl, timeoutMs: config.timeoutMs, payloadBytes, summary: summarizePayload(payload) })
+      );
+    }
+
     const data = config.webhookUrl.startsWith('https://')
       ? await postHttpsJson({ url: config.webhookUrl, payload, timeoutMs: config.timeoutMs })
       : await postFetchJson({ url: config.webhookUrl, payload });
+
+    if (N8N_DEBUG) {
+      const elapsedMs = Date.now() - startedMs;
+      console.log('[n8n] request:success', JSON.stringify({ requestId, elapsedMs }));
+    }
 
     const shouldReply = payload.shouldReply !== false;
     if (!shouldReply) return;
 
     const replyText = extractReplyText(data);
     if (replyText) {
+      if (N8N_DEBUG) {
+        console.log(
+          '[n8n] reply:send',
+          JSON.stringify({ requestId, replyPreview: truncate(replyText, 240), replyLen: replyText.length })
+        );
+      }
       await sendReplyWithTyping({ sock, remoteJid, text: replyText, isGroup: payload.isGroup });
       return;
     }
 
+    console.warn(
+      '[n8n] reply:fallback',
+      JSON.stringify({ requestId, reason: 'no_reply_text', elapsedMs: Date.now() - startedMs, summary: summarizePayload(payload) })
+    );
     await sendDefaultReply({ sock, remoteJid, isGroup: payload.isGroup });
   } catch (error) {
-    console.error('Error sending to N8N:', error);
+    const errMsg = error instanceof Error ? error.message : String(error);
+    const errStack = error instanceof Error ? error.stack ?? null : null;
+    console.error(
+      '[n8n] request:error',
+      JSON.stringify({ requestId, elapsedMs: Date.now() - startedMs, payloadBytes, error: { message: errMsg, stack: errStack }, summary: summarizePayload(payload) })
+    );
     const shouldReply = payload.shouldReply !== false;
     if (!shouldReply) return;
     await sendDefaultReply({ sock, remoteJid, isGroup: payload.isGroup });
