@@ -57,6 +57,35 @@ npm run dev   # nodemon
 npm start     # node
 ```
 
+## Qontak Test
+Environment:
+```env
+MEKARI_API_CLIENT_ID=
+MEKARI_API_CLIENT_SECRET=
+QONTAK_TO_NUMBER=6281234567890
+QONTAK_TO_NAME=Customer
+QONTAK_MESSAGE_TEMPLATE_ID=
+QONTAK_CHANNEL_INTEGRATION_ID=
+QONTAK_LANGUAGE_CODE=id
+QONTAK_TEMPLATE_PARAMETERS_JSON={"body":[{"key":"1","value_text":"Hello","value":"hello"}]}
+```
+
+Run:
+```bash
+node qontak.js
+```
+
+List templates:
+```bash
+node qontak.js list-templates
+```
+
+Checks:
+```bash
+npm run lint        # syntax check (node --check)
+npx tsc --noEmit    # TypeScript compiler pass over JS
+```
+
 On first run, scan the QR code printed in the terminal to pair your WhatsApp session.
 
 ## API Endpoints
@@ -140,14 +169,15 @@ Built-in commands:
 - LID to phone fallback mapping supported via reverse mapping files under `auth_info_baileys/`.
 
 ## Project Scripts
-- Defined in [package.json](file:///c:/Scripts/Projects/whatsapp_api_n8nv2/package.json):
-  - `dev` – runs nodemon
-  - `start` – runs node
+- Defined in [package.json](file:///Users/widjis/Documents/Projects/whatsapp_api_n8nv2/package.json):
+  - `dev` – runs `src/index.ts` via `tsx watch`
+  - `build` – compiles TypeScript to `dist/`
+  - `start` – runs `dist/index.js`
+  - `lint` – runs `npx tsc --noEmit`
 
 ## Code References
-- Entry: [index.js](file:///c:/Scripts/Projects/whatsapp_api_n8nv2/index.js)
-- Middleware & endpoints: [index.js](file:///c:/Scripts/Projects/whatsapp_api_n8nv2/index.js#L146-L232)
-- Bulk messaging: [index.js](file:///c:/Scripts/Projects/whatsapp_api_n8nv2/index.js#L234-L261)
-- Inbound handling: [index.js](file:///c:/Scripts/Projects/whatsapp_api_n8nv2/index.js#L499-L518)
-- Command handling: [index.js](file:///c:/Scripts/Projects/whatsapp_api_n8nv2/index.js#L417-L436)
- - LDAP helpers and reset password: [index.js](file:///c:/Scripts/Projects/whatsapp_api_n8nv2/index.js#L94-L140)
+- Entry: [index.ts](file:///Users/widjis/Documents/Projects/whatsapp_api_n8nv2/src/index.ts)
+- Middleware: [checkIp.ts](file:///Users/widjis/Documents/Projects/whatsapp_api_n8nv2/src/features/http/middleware/checkIp.ts)
+- Endpoints: [messages.ts](file:///Users/widjis/Documents/Projects/whatsapp_api_n8nv2/src/features/http/routes/messages.ts)
+- Inbound handling: [startWhatsApp](file:///Users/widjis/Documents/Projects/whatsapp_api_n8nv2/src/features/whatsapp/start.ts)
+- LDAP reset: [resetPassword](file:///Users/widjis/Documents/Projects/whatsapp_api_n8nv2/src/features/integrations/ldap.ts)

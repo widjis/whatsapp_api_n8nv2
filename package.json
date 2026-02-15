@@ -2,11 +2,15 @@
   "name": "whatsapp-api-n8nv2",
   "version": "1.0.0",
   "description": "WhatsApp API Gateway",
-  "main": "index.js",
+  "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "qontak": "node dist/qontak.js",
+    "qontak:dev": "tsx src/qontak.ts",
+    "lint": "npx tsc --noEmit"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
@@ -21,6 +25,13 @@
     "socket.io": "^4.7.2"
   },
   "devDependencies": {
-    "nodemon": "^3.1.11"
+    "nodemon": "^3.1.11",
+    "tsx": "^4.19.4",
+    "@types/express": "^4.17.21",
+    "@types/ldapjs": "^3.0.6",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^20.11.30",
+    "@types/qrcode": "^1.5.5",
+    "typescript": "^5.4.5"
   }
 }
