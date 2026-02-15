@@ -177,3 +177,9 @@
   - Added `data/technicianContacts.json` to `.gitignore`.
 - Reason:
   - Keep local operational data out of the repository.
+
+## [2026-02-15 13:48:15 WITA] Port legacy /send-group-message HTTP endpoint
+- Change:
+  - Added `/send-group-message` route with optional document/image upload and mentions.
+- Impact:
+  - Supports `id` (group JID) or `name` (search by group subject) and JSON `mention` arrays.

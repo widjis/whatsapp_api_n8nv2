@@ -27,6 +27,93 @@ type SendBulkMessageBody = {
   maxDelay: number;
 };
 
+type SendGroupMessageBody = {
+  id?: string;
+  name?: string;
+  message?: string;
+  mention?: string;
+};
+
+type UploadedFile = {
+  path: string;
+  originalname: string;
+  mimetype?: string;
+};
+
+function pickUploadedFile(files: unknown, fieldName: string): UploadedFile | undefined {
+  if (!files || typeof files !== 'object') return undefined;
+  const record = files as Record<string, unknown>;
+  const entry = record[fieldName];
+  if (!Array.isArray(entry) || entry.length < 1) return undefined;
+  const first = entry[0];
+  if (!first || typeof first !== 'object') return undefined;
+  const fileRecord = first as Record<string, unknown>;
+  const filePath = fileRecord.path;
+  const originalname = fileRecord.originalname;
+  if (typeof filePath !== 'string' || typeof originalname !== 'string') return undefined;
+  const mimetype = typeof fileRecord.mimetype === 'string' ? fileRecord.mimetype : undefined;
+  return { path: filePath, originalname, mimetype };
+}
+
+function ensureMentionJid(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.includes('@')) return trimmed;
+  return `${trimmed}@s.whatsapp.net`;
+}
+
+function parseMentionedJids(raw: unknown): string[] {
+  if (typeof raw !== 'string' || raw.trim().length < 1) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const mapped = parsed
+      .map((item): string | null => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object') {
+          const record = item as Record<string, unknown>;
+          if (typeof record.jid === 'string') return record.jid;
+          if (typeof record.phone === 'string') return record.phone;
+        }
+        return null;
+      })
+      .filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+    return mapped.map(ensureMentionJid);
+  } catch {
+    return [];
+  }
+}
+
+async function findGroupIdByName(sock: WASocket, groupName: string): Promise<string | null> {
+  const groups = await sock.groupFetchAllParticipating();
+  const entries = Object.entries(groups);
+  const needle = groupName.toLowerCase();
+  const found = entries.find(([, group]) => {
+    if (!group.subject) return false;
+    return group.subject.toLowerCase().includes(needle);
+  });
+  return found ? found[0] : null;
+}
+
+async function resolveGroupChatId(args: { sock: WASocket; id?: string; name?: string }): Promise<string | null> {
+  const id = args.id?.trim();
+  const name = args.name?.trim();
+  if (id && id.includes('@g.us')) return id;
+  if (id && /^\d+$/.test(id)) return `${id}@g.us`;
+  if (id) return await findGroupIdByName(args.sock, id);
+  if (name) return await findGroupIdByName(args.sock, name);
+  return null;
+}
+
+function resolveDocumentMimeType(file: UploadedFile): string {
+  if (file.originalname.toLowerCase().endsWith('.xlsx')) {
+    return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  }
+  if (file.originalname.toLowerCase().endsWith('.pdf')) {
+    return 'application/pdf';
+  }
+  return file.mimetype ?? 'application/octet-stream';
+}
+
 async function sendTextMessage(args: { number: string; message: string; sock: WASocket }) {
   const formattedNumber = phoneNumberFormatter(args.number);
   const response = await args.sock.sendMessage(formattedNumber, { text: args.message });
@@ -153,6 +240,95 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         const messageText = error instanceof Error ? error.message : String(error);
         console.error('Error sending bulk messages:', error);
         res.status(500).json({ status: false, message: messageText });
+      }
+    }
+  );
+
+  deps.app.post(
+    '/send-group-message',
+    deps.checkIp,
+    deps.upload.fields([
+      { name: 'document', maxCount: 1 },
+      { name: 'image', maxCount: 1 },
+    ]),
+    [
+      body('id').custom((value, { req }) => {
+        const r = req as Request;
+        const bodyUnknown = r.body as unknown;
+        const bodyObj = bodyUnknown && typeof bodyUnknown === 'object' ? (bodyUnknown as Record<string, unknown>) : {};
+        if (!value && typeof bodyObj.name !== 'string') {
+          throw new Error('Invalid value, you can use `id` or `name`');
+        }
+        return true;
+      }),
+      body('message').optional().notEmpty().withMessage('Message cannot be empty'),
+    ],
+    async (req: Request, res: Response) => {
+      const errors = validationResult(req).formatWith((error) => error.msg);
+      if (!errors.isEmpty()) {
+        res.status(422).json({ status: false, message: errors.mapped() });
+        return;
+      }
+
+      const sock = deps.getSocket();
+      if (!sock) {
+        res.status(503).json({ status: false, message: 'WhatsApp socket is not initialized.' });
+        return;
+      }
+
+      const body = req.body as SendGroupMessageBody;
+      const mentionedJids = parseMentionedJids(body.mention);
+      const chatId = await resolveGroupChatId({ sock, id: body.id, name: body.name });
+      if (!chatId) {
+        const provided = body.id?.trim() || body.name?.trim() || '';
+        res.status(422).json({ status: false, message: `No group found with name: ${provided}` });
+        return;
+      }
+
+      const filesUnknown = (req as Request & { files?: unknown }).files;
+      const document = pickUploadedFile(filesUnknown, 'document');
+      const image = pickUploadedFile(filesUnknown, 'image');
+
+      try {
+        if (document) {
+          const buffer = await fs.promises.readFile(document.path);
+          try {
+            const response = await sock.sendMessage(chatId, {
+              document: buffer,
+              mimetype: resolveDocumentMimeType(document),
+              fileName: document.originalname,
+              caption: body.message ?? '',
+              mentions: mentionedJids,
+            });
+            res.status(200).json({ status: true, response });
+          } finally {
+            await fs.promises.unlink(document.path).catch(() => undefined);
+          }
+          return;
+        }
+
+        if (image) {
+          const buffer = await fs.promises.readFile(image.path);
+          try {
+            const response = await sock.sendMessage(chatId, {
+              image: buffer,
+              caption: body.message ?? '',
+              mentions: mentionedJids,
+            });
+            res.status(200).json({ status: true, response });
+          } finally {
+            await fs.promises.unlink(image.path).catch(() => undefined);
+          }
+          return;
+        }
+
+        const response = await sock.sendMessage(chatId, {
+          text: body.message ?? 'Hello',
+          mentions: mentionedJids,
+        });
+        res.status(200).json({ status: true, response });
+      } catch (error) {
+        res.status(500).json({ status: false, response: String(error) });
       }
     }
   );
