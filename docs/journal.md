@@ -241,3 +241,29 @@
   - `SearchEntry.objectName` may not be a string in ldapjs, causing DN resolution to return zero matches.
 - Impact:
   - `/resetpassword <sAMAccountName> ...` can correctly resolve the target DN and proceed with password reset.
+
+## [2026-02-15 14:19:12 WITA] Add first-reaction ticket claim flow
+- Change:
+  - Stored the outbound WhatsApp message ID for each new ticket notification.
+  - Added reaction handler to let the first technician claim a ticket.
+  - Claim updates ServiceDesk status to `In Progress` and assigns the technician.
+- Impact:
+  - Requires `TICKET_REACTION_GROUP_IDS` (comma-separated group JIDs) to enable claiming.
+  - Uses `REDIS_HOST`/`REDIS_PORT` when available for durable claim locking.
+
+## [2026-02-15 14:19:28 WITA] Port legacy /getbitlocker command
+- Change:
+  - Added `/getbitlocker <hostname>` command to lookup BitLocker recovery keys via LDAP.
+- Impact:
+  - Requires `LDAP_BASE_DN` (or `BASE_DN` / `BASE_OU`) plus LDAP bind settings.
+
+## [2026-02-15 14:22:18 WITA] Port legacy /getasset command
+- Change:
+  - Added `/getasset [type]` command backed by Snipe-IT API.
+  - Added Snipe-IT integration module and category mapping.
+- Impact:
+  - Requires `SNIPEIT_URL` and `SNIPEIT_TOKEN`.
+
+## [2026-02-15 14:23:12 WITA] Improve /getbitlocker message formatting
+- Change:
+  - Reformatted `/getbitlocker` WhatsApp output with clearer headings and key sections.

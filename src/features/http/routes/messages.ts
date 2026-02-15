@@ -587,11 +587,11 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         if (ticketStatus === 'Open') {
           const suggestedCategory = await defineServiceCategory(requestObj.id);
           if (suggestedCategory) {
+            const priorityForUpdate = priority !== 'N/A' ? priority : 'Low';
             await updateRequest(requestObj.id, {
               serviceCategory: suggestedCategory,
-              status: 'IT Support & Services',
               ictTechnician: 'ICT Helpdesk',
-              priority,
+              priority: priorityForUpdate,
             });
           }
         }

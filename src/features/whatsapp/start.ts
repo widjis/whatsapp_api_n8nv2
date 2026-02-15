@@ -1,5 +1,7 @@
 import { pino } from 'pino';
 import qrcode from 'qrcode';
+import path from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 import {
   Browsers,
   DisconnectReason,
@@ -12,16 +14,21 @@ import type { Server as SocketIoServer } from 'socket.io';
 import type { InMemoryStore } from './store.js';
 import { extractMessageContent, resolveSenderNumber } from './utils.js';
 import { handleN8nIntegration } from '../integrations/n8n.js';
-import { findUsersByCommonName, renderFindUserCaption, resetPassword } from '../integrations/ldap.js';
+import { findUsersByCommonName, getBitLockerInfo, renderFindUserCaption, resetPassword } from '../integrations/ldap.js';
+import { buildGetAssetReply, CATEGORY_MAPPING } from '../integrations/snipeIt.js';
 import {
   addTechnicianContact,
   deleteTechnicianContact,
+  getContactByPhone,
   getTechnicianContactById,
   listTechnicianContacts,
+  normalizeTechnicianPhoneNumber,
   searchTechnicianContacts,
   updateTechnicianContact,
 } from '../integrations/technicianContacts.js';
 import type { TechnicianContact, TechnicianContactUpdateField } from '../integrations/technicianContacts.js';
+import { claimTicketNotification, loadTicketNotification } from '../tickets/claimStore.js';
+import { assignTechnicianToRequest, updateRequest, viewRequest } from '../integrations/ticketHandle.js';
 
 let sock: WASocket | undefined;
 
@@ -103,9 +110,10 @@ const COMMAND_HELP: Record<string, CommandHelpEntry> = {
     examples: ['/getups pyr', '/getups mkt'],
   },
   getasset: {
-    usage: '/getasset <asset_id>',
-    description: 'Gets the details of the asset with the given ID.',
-    examples: ['/getasset PC', '/getasset notebook', '/getasset monitor'],
+    usage: '/getasset [type]',
+    description: 'Summarizes assets from Snipe-IT by category.',
+    available: `Types: ${Object.keys(CATEGORY_MAPPING).sort().join(', ')}`,
+    examples: ['/getasset', '/getasset pc', '/getasset notebook', '/getasset monitor'],
   },
   addwifi: {
     usage: '/addwifi <pool> <mac> <comment> [/days <number_of_days>]',
@@ -139,7 +147,7 @@ const COMMAND_HELP: Record<string, CommandHelpEntry> = {
   },
   getbitlocker: {
     usage: '/getbitlocker <hostname>',
-    description: 'Retrieves BitLocker status for the specified asset ID.',
+    description: 'Retrieves BitLocker recovery keys for the specified hostname from Active Directory.',
     examples: ['/getbitlocker mti-nb-123'],
   },
   ticketreport: {
@@ -275,6 +283,54 @@ function getRequesterPhoneFromMessage(msg: proto.IWebMessageInfo, remoteJid: str
   if (!senderJid) return undefined;
   const match = senderJid.match(/(\d+)@s\.whatsapp\.net/);
   return match?.[1];
+}
+
+function parseReactionGroupIds(): Set<string> {
+  const raw = process.env.TICKET_REACTION_GROUP_IDS;
+  if (!raw) return new Set();
+  const parts = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return new Set(parts);
+}
+
+function resolveParticipantJid(args: { participant: string; store: InMemoryStore; authInfoDir: string }): string {
+  const sender = args.participant;
+  if (!sender.includes('@lid')) return sender;
+
+  const contactId = args.store.contacts[sender]?.id;
+  const mappedViaContacts = contactId ?? sender;
+  if (!mappedViaContacts.includes('@lid')) return mappedViaContacts;
+
+  const lidUser = sender.split('@')[0] ?? '';
+  const mappingFile = path.join(args.authInfoDir, `lid-mapping-${lidUser}_reverse.json`);
+  if (!existsSync(mappingFile)) return mappedViaContacts;
+
+  try {
+    const raw = readFileSync(mappingFile, 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed === 'string' && parsed) {
+      return `${parsed}@s.whatsapp.net`;
+    }
+  } catch {
+    return mappedViaContacts;
+  }
+
+  return mappedViaContacts;
+}
+
+function extractPhoneDigitsFromJid(jid: string): string | null {
+  const match = jid.match(/(\d+)@s\.whatsapp\.net/);
+  return match?.[1] ?? null;
+}
+
+function determineServiceDeskGroupByRole(role: string): string {
+  const r = role.toLowerCase();
+  if (r.includes('document control')) return 'ICT Document Controller';
+  if (r.includes('it field support')) return 'ICT Network and Infrastructure';
+  if (r.includes('it support')) return 'ICT System and Support';
+  return 'ICT System and Support';
 }
 
 function renderTechnicianLine(c: TechnicianContact): string {
@@ -433,6 +489,68 @@ async function handleCommand(args: {
       }
 
       await sock.sendMessage(remoteJid, { text: `Password reset for ${username} successful` });
+      return;
+    }
+    case '/getasset': {
+      try {
+        const reply = await buildGetAssetReply(messageContent);
+        await sock.sendMessage(remoteJid, { text: reply });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await sock.sendMessage(remoteJid, { text: `Error getting assets: ${message}` });
+      }
+      return;
+    }
+    case '/getbitlocker': {
+      const hostname = messageContent.trim().split(/\s+/)[1];
+
+      if (!hostname) {
+        await sock.sendMessage(remoteJid, {
+          text: '❌ Invalid command format. Usage: /getbitlocker <hostname>\n\nExample: /getbitlocker MTI-NB-177',
+        });
+        return;
+      }
+
+      const result = await getBitLockerInfo({ hostname });
+      if (!result.success) {
+        await sock.sendMessage(remoteJid, { text: `*Error:* ${result.error}` });
+        return;
+      }
+
+      const { hostname: host, keys } = result.data;
+      const lines: string[] = ['*BitLocker Recovery Keys*', `*Hostname:* ${host.toUpperCase()}`, `*Found:* ${keys.length}`, ''];
+
+      keys.forEach((k, idx) => {
+        const match = k.partitionId.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+        let formattedDate = 'Unknown';
+        if (match) {
+          const [, y, mo, d, h, mi, s] = match;
+          const dt = new Date(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
+          formattedDate = dt
+            .toLocaleString('en-GB', {
+            timeZone: 'Asia/Jakarta',
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+          })
+            .replace(',', '');
+        }
+
+        const guid = (k.partitionId.split('{')[1] || '').replace('}', '');
+        const passwordId = guid.trim() ? guid : 'Unknown';
+
+        lines.push(`*Key ${idx + 1}*`);
+        lines.push(`• *Password ID:* ${passwordId}`);
+        lines.push(`• *Created:* ${formattedDate} WIB`);
+        lines.push(`• *Recovery Key:* ${k.password}`);
+        if (idx < keys.length - 1) lines.push('');
+      });
+
+      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
       return;
     }
     case '/technician': {
@@ -662,6 +780,105 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
       } else {
         await handleMessage({ sock: currentSock, msg, remoteJid, messageContent, deps });
       }
+    }
+  });
+
+  sock.ev.on('messages.reaction', async (payloadUnknown) => {
+    const allowedGroups = parseReactionGroupIds();
+    if (allowedGroups.size === 0) return;
+    if (!Array.isArray(payloadUnknown)) return;
+
+    const currentSock = sock;
+    if (!currentSock) return;
+
+    for (const itemUnknown of payloadUnknown) {
+      if (!itemUnknown || typeof itemUnknown !== 'object') continue;
+      const item = itemUnknown as {
+        key?: { remoteJid?: unknown; id?: unknown; participant?: unknown };
+        reaction?: { key?: { participant?: unknown } };
+      };
+
+      const remoteJid = typeof item.key?.remoteJid === 'string' ? item.key.remoteJid : undefined;
+      const messageId = typeof item.key?.id === 'string' ? item.key.id : undefined;
+      if (!remoteJid || !messageId) continue;
+      if (!allowedGroups.has(remoteJid)) continue;
+
+      const participantRaw =
+        typeof item.key?.participant === 'string'
+          ? item.key.participant
+          : typeof item.reaction?.key?.participant === 'string'
+            ? item.reaction.key.participant
+            : undefined;
+      if (!participantRaw) continue;
+
+      const participantJid = resolveParticipantJid({ participant: participantRaw, store: deps.store, authInfoDir: deps.authInfoDir });
+      const digits = extractPhoneDigitsFromJid(participantJid);
+      if (!digits) continue;
+
+      const reacterPhone = normalizeTechnicianPhoneNumber(digits);
+      const tech = getContactByPhone(reacterPhone);
+      const stored = await loadTicketNotification({ remoteJid, messageId });
+      if (!stored) continue;
+
+      if (!tech) {
+        await currentSock.sendMessage(remoteJid, {
+          text: `Ticket ${stored.ticketId} cannot be claimed: phone ${reacterPhone} is not registered as a technician.`,
+        });
+        continue;
+      }
+
+      const claim = await claimTicketNotification({
+        remoteJid,
+        messageId,
+        claimantPhone: reacterPhone,
+        claimantName: tech.name,
+      });
+
+      if (!claim.ok) {
+        await currentSock.sendMessage(remoteJid, { text: `Ticket ${stored.ticketId} cannot be claimed (${claim.reason}).` });
+        continue;
+      }
+
+      if (claim.wasClaimed) {
+        const by = claim.record.claimedByName ?? claim.record.claimedByPhone ?? 'another technician';
+        await currentSock.sendMessage(remoteJid, { text: `Sorry, ticket *${stored.ticketId}* has been handled by *${by}*.` });
+        continue;
+      }
+
+      const requestObj = await viewRequest(stored.ticketId);
+      const priorityName = requestObj?.priority?.name;
+      const priority = typeof priorityName === 'string' && priorityName.trim().length > 0 ? priorityName : 'Low';
+
+      const updateRes = await updateRequest(stored.ticketId, {
+        ictTechnician: tech.ict_name,
+        status: 'In Progress',
+        priority,
+      });
+
+      if (!updateRes.success) {
+        await currentSock.sendMessage(remoteJid, {
+          text: `Ticket *${stored.ticketId}* claimed by *${tech.name}*, but failed to update status: ${updateRes.message}`,
+        });
+        continue;
+      }
+
+      const groupName = determineServiceDeskGroupByRole(tech.technician);
+      const assignRes = await assignTechnicianToRequest({
+        requestId: stored.ticketId,
+        groupName,
+        technicianName: tech.technician,
+      });
+
+      if (!assignRes.success) {
+        await currentSock.sendMessage(remoteJid, {
+          text: `Ticket *${stored.ticketId}* claimed by *${tech.name}* and set to *In Progress*, but assignment failed: ${assignRes.message}`,
+        });
+        continue;
+      }
+
+      await currentSock.sendMessage(remoteJid, {
+        text: `✅ Ticket *${stored.ticketId}* claimed by *${tech.name}* (status: *In Progress*).`,
+      });
     }
   });
 }

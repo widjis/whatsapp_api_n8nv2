@@ -109,6 +109,154 @@ export async function findUserMobileByEmail(args: { email: string }): Promise<st
   }
 }
 
+export type BitLockerRecoveryKey = {
+  partitionId: string;
+  password: string;
+};
+
+export type GetBitLockerInfoResult =
+  | {
+      success: true;
+      data: {
+        hostname: string;
+        keys: BitLockerRecoveryKey[];
+      };
+    }
+  | {
+      success: false;
+      error: string;
+    };
+
+export async function getBitLockerInfo(args: { hostname: string }): Promise<GetBitLockerInfoResult> {
+  const hostname = args.hostname.trim();
+  if (!hostname) return { success: false, error: 'Hostname is required.' };
+
+  const baseDn = process.env.LDAP_BASE_DN ?? process.env.BASE_DN ?? process.env.BASE_OU ?? '';
+  if (!baseDn) {
+    return {
+      success: false,
+      error: 'LDAP_BASE_DN (or BASE_DN / BASE_OU) must be set in environment.',
+    };
+  }
+
+  const client = await getLdapClient();
+  try {
+    const h = hostname.toUpperCase();
+    const escaped = escapeLdapFilterValue(h);
+    const compFilter = `(&(objectCategory=computer)(|(cn=${escaped})(sAMAccountName=${escaped}$)))`;
+
+    let computerDns = await searchDns({ client, baseDn, filter: compFilter, scope: 'sub', sizeLimit: 2 });
+    if (computerDns.length === 0) {
+      const wcFilter = `(&(objectCategory=computer)(cn=${escaped}*))`;
+      computerDns = await searchDns({ client, baseDn, filter: wcFilter, scope: 'sub', sizeLimit: 2 });
+    }
+
+    if (computerDns.length === 0) {
+      client.unbind();
+      return { success: false, error: `Computer "${hostname}" not found in AD` };
+    }
+    if (computerDns.length > 1) {
+      client.unbind();
+      return { success: false, error: `Multiple computer objects matched "${hostname}". Provide exact hostname.` };
+    }
+
+    const computerDn = computerDns[0];
+
+    const keys = await searchBitLockerKeys({ client, computerDn });
+    client.unbind();
+
+    if (keys.length === 0) {
+      return { success: false, error: 'No BitLocker recovery objects found' };
+    }
+
+    return { success: true, data: { hostname, keys } };
+  } catch (error) {
+    client.unbind();
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, error: message };
+  }
+}
+
+async function searchDns(args: {
+  client: ldap.Client;
+  baseDn: string;
+  filter: string;
+  scope: 'sub' | 'one' | 'base';
+  sizeLimit: number;
+}): Promise<string[]> {
+  return await new Promise<string[]>((resolve, reject) => {
+    args.client.search(
+      args.baseDn,
+      {
+        scope: args.scope,
+        filter: args.filter,
+        attributes: ['distinguishedName'],
+        sizeLimit: args.sizeLimit,
+      },
+      (err, res) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        const results: string[] = [];
+        res.on('searchEntry', (entry) => {
+          const dn = entry.pojo.objectName;
+          if (typeof dn === 'string' && dn.trim()) results.push(dn);
+        });
+
+        res.on('error', (e) => {
+          reject(e);
+        });
+
+        res.on('end', () => {
+          resolve(results);
+        });
+      }
+    );
+  });
+}
+
+async function searchBitLockerKeys(args: { client: ldap.Client; computerDn: string }): Promise<BitLockerRecoveryKey[]> {
+  return await new Promise<BitLockerRecoveryKey[]>((resolve, reject) => {
+    args.client.search(
+      args.computerDn,
+      {
+        scope: 'one',
+        filter: '(msFVE-RecoveryPassword=*)',
+        attributes: ['msFVE-RecoveryPassword'],
+      },
+      (err, res) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        const results: BitLockerRecoveryKey[] = [];
+        res.on('searchEntry', (entry) => {
+          const dn = entry.pojo.objectName;
+          const map = buildAttributeMap(entry);
+          const password = pickFirstAttr(map, 'msFVE-RecoveryPassword') ?? '';
+          if (typeof dn !== 'string' || !dn.trim() || !password) return;
+
+          const partitionId = dn.split(',')[0]?.replace(/^CN=/i, '') ?? '';
+          if (!partitionId.trim()) return;
+
+          results.push({ partitionId, password });
+        });
+
+        res.on('error', (e) => {
+          reject(e);
+        });
+
+        res.on('end', () => {
+          resolve(results);
+        });
+      }
+    );
+  });
+}
+
 function escapeLdapFilterValue(value: string): string {
   return value
     .replace(/\\/g, '\\5c')

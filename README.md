@@ -42,6 +42,10 @@ BIND_DN=CN=ldapbind,OU=Service Accounts,DC=example,DC=com
 BIND_PW=yourStrongPassword
 BASE_OU=OU=Users,DC=example,DC=com
 
+# Snipe-IT (required for /getasset)
+SNIPEIT_URL=https://snipeit.example.com/api/v1
+SNIPEIT_TOKEN=yourSnipeItApiToken
+
 # Authorization for admin commands
 ALLOWED_PHONE_NUMBERS=6281234567890,6289876543210
 ```
@@ -162,6 +166,8 @@ Built-in commands:
 - `/hi` – replies "Hello!"
 - `/help` – lists available commands
 - `/resetpassword <username> <newPassword> [/change]` – username can be `sAMAccountName`, UPN/email, or CN/displayName (if uniquely matched). Resets AD password; optionally forces change at next logon when `/change` flag is present. Access restricted to `ALLOWED_PHONE_NUMBERS` (works in private chats and groups).
+- `/getbitlocker <hostname>` – looks up BitLocker recovery keys for a computer in Active Directory (searches by `cn` / `sAMAccountName`). Requires `LDAP_BASE_DN` (or `BASE_DN` / `BASE_OU`) plus LDAP bind settings.
+- `/getasset [type]` – summarizes assets from Snipe-IT by category. Requires `SNIPEIT_URL` and `SNIPEIT_TOKEN`.
 
 ## Implementation Notes
 - Number formatting auto-converts local `0XXXXXXXXX` to `62XXXXXXXXX@s.whatsapp.net`.

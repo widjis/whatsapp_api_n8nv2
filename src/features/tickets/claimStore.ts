@@ -171,7 +171,7 @@ export async function claimTicketNotification(args: {
 
   try {
     await redis.connect();
-    const lockSet = await redis.set(lock, args.claimantPhone, 'NX', 'EX', 60 * 60 * 24);
+    const lockSet = await redis.set(lock, args.claimantPhone, 'EX', 60 * 60 * 24, 'NX');
     if (lockSet !== 'OK') {
       const current = await loadTicketNotification({ remoteJid: args.remoteJid, messageId: args.messageId });
       if (!current) return { ok: false, reason: 'not_found' };
@@ -196,4 +196,3 @@ export async function claimTicketNotification(args: {
     return { ok: false, reason: 'storage_error' };
   }
 }
-
