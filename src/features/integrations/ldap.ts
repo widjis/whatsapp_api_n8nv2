@@ -1,4 +1,5 @@
 import ldap from 'ldapjs';
+import sql from 'mssql';
 
 export async function getLdapClient(): Promise<ldap.Client> {
   const url = process.env.LDAP_URL ?? '';
@@ -25,6 +26,421 @@ export async function getLdapClient(): Promise<ldap.Client> {
   });
 
   return client;
+}
+
+type FoundUser = {
+  displayName: string;
+  userPrincipalName?: string;
+  mail?: string;
+  title?: string;
+  department?: string;
+  mobile?: string;
+  telephoneNumber?: string;
+  employeeID?: string;
+  pwdLastSet?: string;
+  passwordExpiryTimeComputed?: string;
+  photoBuffer?: Buffer;
+  photoContentType?: string;
+};
+
+export type FindUsersResult =
+  | {
+      success: true;
+      users: FoundUser[];
+    }
+  | {
+      success: false;
+      error: string;
+    };
+
+function escapeLdapFilterValue(value: string): string {
+  return value
+    .replace(/\\/g, '\\5c')
+    .replace(/\*/g, '\\2a')
+    .replace(/\(/g, '\\28')
+    .replace(/\)/g, '\\29')
+    .replace(/\u0000/g, '\\00');
+}
+
+function getFirstString(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    const first = value[0];
+    if (typeof first === 'string') return first;
+  }
+  return undefined;
+}
+
+type DbPhotoRow = {
+  PHOTO: Buffer | null;
+};
+
+let dbPool: sql.ConnectionPool | undefined;
+let dbPoolConnectPromise: Promise<sql.ConnectionPool> | undefined;
+
+function getDbConfig(): sql.config {
+  const user = process.env.DB_USER;
+  const password = process.env.DB_PASSWORD;
+  const server = process.env.DB_SERVER;
+  const database = process.env.DB_DATABASE;
+  const portRaw = process.env.DB_PORT;
+  const port = portRaw ? Number(portRaw) : undefined;
+
+  if (!user || !password || !server || !database) {
+    throw new Error('DB_USER, DB_PASSWORD, DB_SERVER, and DB_DATABASE must be set in environment');
+  }
+
+  return {
+    user,
+    password,
+    server,
+    database,
+    port: port && Number.isFinite(port) ? port : undefined,
+    options: {
+      encrypt: false,
+      trustServerCertificate: true,
+    },
+  };
+}
+
+async function initializeDbPool(): Promise<sql.ConnectionPool> {
+  if (dbPool && dbPool.connected) return dbPool;
+  if (dbPoolConnectPromise) return dbPoolConnectPromise;
+
+  dbPoolConnectPromise = (async () => {
+    if (dbPool && !dbPool.connected) {
+      try {
+        await dbPool.close();
+      } catch {
+        // ignore
+      }
+      dbPool = undefined;
+    }
+
+    const pool = new sql.ConnectionPool(getDbConfig());
+    await pool.connect();
+    dbPool = pool;
+    return pool;
+  })();
+
+  try {
+    return await dbPoolConnectPromise;
+  } finally {
+    dbPoolConnectPromise = undefined;
+  }
+}
+
+async function getUserPhotoFromDb(staffNo: string): Promise<Buffer | null> {
+  try {
+    const activePool = await initializeDbPool();
+    const request = activePool.request();
+    request.input('staffNo', sql.NVarChar, staffNo);
+
+    const result = await request.query<DbPhotoRow>(
+      `SELECT PHOTO FROM CardDB WHERE StaffNo = @staffNo AND Del_State = 'False'`
+    );
+
+    const row = result.recordset[0];
+    return row?.PHOTO ?? null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes('Connection is closed')) {
+      throw error;
+    }
+
+    dbPoolConnectPromise = undefined;
+    if (dbPool) {
+      try {
+        await dbPool.close();
+      } catch {
+        // ignore
+      }
+    }
+    dbPool = undefined;
+
+    const activePool = await initializeDbPool();
+    const request = activePool.request();
+    request.input('staffNo', sql.NVarChar, staffNo);
+    const result = await request.query<DbPhotoRow>(
+      `SELECT PHOTO FROM CardDB WHERE StaffNo = @staffNo AND Del_State = 'False'`
+    );
+    const row = result.recordset[0];
+    return row?.PHOTO ?? null;
+  }
+}
+
+function toBigIntFileTime(value: unknown): bigint | undefined {
+  const asString = typeof value === 'string' ? value : undefined;
+  const asNumber = typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+  if (asString) {
+    const trimmed = asString.trim();
+    if (!trimmed) return undefined;
+    try {
+      return BigInt(trimmed);
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (asNumber !== undefined) {
+    try {
+      return BigInt(Math.trunc(asNumber));
+    } catch {
+      return undefined;
+    }
+  }
+
+  return undefined;
+}
+
+function formatFileTimeToLocaleString(fileTime: unknown): string | undefined {
+  const EPOCH_DIFFERENCE_MS = 11644473600000n;
+  const ft = toBigIntFileTime(fileTime);
+  if (!ft) return undefined;
+
+  const msBig = ft / 10000n - EPOCH_DIFFERENCE_MS;
+  const msNumber = Number(msBig);
+  if (!Number.isFinite(msNumber)) return undefined;
+  const date = new Date(msNumber);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.toLocaleString();
+}
+
+function isExceptionallyLongDateString(dateString: string): boolean {
+  const parsed = new Date(dateString);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return parsed.getFullYear() > 2100;
+}
+
+function looksLikeImage(buffer: Buffer): boolean {
+  if (buffer.length < 8) return false;
+
+  const isJpeg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  if (isJpeg) return true;
+
+  const isPng =
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a;
+  if (isPng) return true;
+
+  const isGif = buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46;
+  return isGif;
+}
+
+function normalizeAttributeType(type: string): string {
+  return type.toLowerCase().split(';')[0] ?? type.toLowerCase();
+}
+
+function decodeMaybeBase64Image(value: string): Buffer | undefined {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length < 32) return undefined;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed)) return undefined;
+
+  try {
+    const decoded = Buffer.from(trimmed, 'base64');
+    if (!looksLikeImage(decoded)) return undefined;
+    return decoded;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractPhotoFromEntry(entry: ldap.SearchEntry): { buffer: Buffer; contentType?: string } | undefined {
+  const thumb = entry.attributes.find((a) => normalizeAttributeType(a.type) === 'thumbnailphoto');
+  if (thumb) {
+    const buf = thumb.buffers[0];
+    if (buf && looksLikeImage(buf)) return { buffer: buf };
+    const values = Array.isArray(thumb.values) ? thumb.values : [thumb.values];
+    const first = values[0];
+    if (typeof first === 'string') {
+      const decoded = decodeMaybeBase64Image(first);
+      if (decoded) return { buffer: decoded };
+    }
+  }
+
+  const jpeg = entry.attributes.find((a) => normalizeAttributeType(a.type) === 'jpegphoto');
+  if (jpeg) {
+    const buf = jpeg.buffers[0];
+    if (buf && looksLikeImage(buf)) return { buffer: buf };
+    const values = Array.isArray(jpeg.values) ? jpeg.values : [jpeg.values];
+    const first = values[0];
+    if (typeof first === 'string') {
+      const decoded = decodeMaybeBase64Image(first);
+      if (decoded) return { buffer: decoded };
+    }
+  }
+
+  return undefined;
+}
+
+function buildAttributeMap(entry: ldap.SearchEntry): Map<string, string[]> {
+  const map = new Map<string, string[]>();
+  for (const attr of entry.pojo.attributes) {
+    map.set(attr.type.toLowerCase(), attr.values);
+  }
+  return map;
+}
+
+function pickFirstAttr(map: Map<string, string[]>, name: string): string | undefined {
+  const values = map.get(name.toLowerCase());
+  const first = values?.[0];
+  return first ? String(first) : undefined;
+}
+
+export async function findUsersByCommonName(args: { query: string; includePhoto: boolean }): Promise<FindUsersResult> {
+  const { query, includePhoto } = args;
+  try {
+    const baseDn = process.env.BASE_DN ?? process.env.LDAP_BASE_DN ?? process.env.BASE_OU ?? '';
+    if (!baseDn) {
+      return {
+        success: false,
+        error: 'BASE_DN (or LDAP_BASE_DN / BASE_OU) must be set in environment',
+      };
+    }
+
+    const client = await getLdapClient();
+    const escaped = escapeLdapFilterValue(query.toLowerCase());
+    const filter = `(&(cn=*${escaped}*))`;
+
+    const attributesBase = [
+      'displayName',
+      'userPrincipalName',
+      'title',
+      'department',
+      'mobile',
+      'employeeID',
+      'pwdLastSet',
+      'msDS-UserPasswordExpiryTimeComputed',
+      'cn',
+    ];
+
+    const attributes = includePhoto ? [...attributesBase, 'thumbnailPhoto', 'jpegPhoto'] : attributesBase;
+
+    const users: FoundUser[] = [];
+    const photoFetches: Array<Promise<void>> = [];
+    await new Promise<void>((resolve, reject) => {
+      client.search(
+        baseDn,
+        {
+          scope: 'sub',
+          filter,
+          attributes,
+        },
+        (err, res) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+
+          res.on('searchEntry', (entry) => {
+            const map = buildAttributeMap(entry);
+
+            const displayName =
+              pickFirstAttr(map, 'displayName') ??
+              pickFirstAttr(map, 'cn') ??
+              pickFirstAttr(map, 'name') ??
+              pickFirstAttr(map, 'sAMAccountName') ??
+              pickFirstAttr(map, 'userPrincipalName') ??
+              'Unknown';
+
+            const user: FoundUser = {
+              displayName,
+              userPrincipalName: pickFirstAttr(map, 'userPrincipalName'),
+              mail: pickFirstAttr(map, 'mail'),
+              title: pickFirstAttr(map, 'title'),
+              department: pickFirstAttr(map, 'department'),
+              mobile: pickFirstAttr(map, 'mobile') ?? pickFirstAttr(map, 'mobileNumber'),
+              telephoneNumber: pickFirstAttr(map, 'telephoneNumber'),
+              employeeID: pickFirstAttr(map, 'employeeID'),
+              pwdLastSet: pickFirstAttr(map, 'pwdLastSet'),
+              passwordExpiryTimeComputed: pickFirstAttr(map, 'msDS-UserPasswordExpiryTimeComputed'),
+            };
+
+            if (includePhoto) {
+              const photo = extractPhotoFromEntry(entry);
+              if (photo) {
+                user.photoBuffer = photo.buffer;
+                user.photoContentType = photo.contentType;
+              } else if (user.employeeID) {
+                const employeeId = user.employeeID;
+                photoFetches.push(
+                  (async () => {
+                    try {
+                      const dbPhoto = await getUserPhotoFromDb(employeeId);
+                      if (dbPhoto && looksLikeImage(dbPhoto)) {
+                        user.photoBuffer = dbPhoto;
+                      }
+                    } catch {
+                      return;
+                    }
+                  })()
+                );
+              }
+            }
+
+            users.push(user);
+          });
+
+          res.on('error', (e) => {
+            reject(e);
+          });
+
+          res.on('end', () => {
+            resolve();
+          });
+        }
+      );
+    });
+
+    if (photoFetches.length > 0) {
+      await Promise.all(photoFetches);
+    }
+
+    client.unbind();
+
+    return { success: true, users };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, error: message };
+  }
+}
+
+export function renderFindUserCaption(args: { user: FoundUser; includePhoto: boolean }): {
+  caption: string;
+  photoStatus: string;
+  hasPhoto: boolean;
+  photoBuffer?: Buffer;
+} {
+  const { user, includePhoto } = args;
+
+  const lastSet = formatFileTimeToLocaleString(user.pwdLastSet) ?? 'Unknown';
+  const expires = formatFileTimeToLocaleString(user.passwordExpiryTimeComputed);
+  const expiryMsg =
+    user.passwordExpiryTimeComputed && expires && !isExceptionallyLongDateString(expires)
+      ? `Password Expired on: ${expires}`
+      : 'Password never expires';
+
+  const hasPhoto = includePhoto && Boolean(user.photoBuffer);
+  const photoStatus = includePhoto ? (hasPhoto ? ' 📷' : ' (No photo available)') : '';
+
+  const caption =
+    `*${user.displayName}* [MTI]${photoStatus}\n` +
+    `📧 ${user.userPrincipalName ?? user.mail ?? 'Not available'}\n` +
+    `🏷️ ${user.title ?? 'Not available'}\n` +
+    `🏢 ${user.department ?? 'Not available'}\n` +
+    `📱 ${user.mobile ?? user.telephoneNumber ?? 'Not available'}\n` +
+    (user.employeeID ? `🆔 ${user.employeeID}\n` : '') +
+    `🔒 Last Pass Change: ${lastSet}\n` +
+    `⏳ ${expiryMsg}`;
+
+  return { caption, photoStatus, hasPhoto, photoBuffer: user.photoBuffer };
 }
 
 export type ResetPasswordResult =
@@ -80,4 +496,3 @@ export async function resetPassword(args: {
     return { success: false, error: message };
   }
 }
-

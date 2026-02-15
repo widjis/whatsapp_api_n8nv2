@@ -23,6 +23,12 @@ uploads/
 tmp/
 temp/
 
+# Local data
+data/technicianContacts.json
+
+# Legacy reference (keep out of git)
+reference/
+
 # OS / editor files
 .DS_Store
 .vscode/

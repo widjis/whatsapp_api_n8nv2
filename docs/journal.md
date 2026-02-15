@@ -107,3 +107,73 @@
   - Keep old implementations for comparison without cluttering the root.
 - Impact:
   - Runtime now uses `src/` and `dist/`; legacy JS remains available under `reference/`.
+
+## [2026-02-15 12:48:43 WITA] Copy legacy /help behavior
+- Change:
+  - Updated `/help` to support `/help` (list) and `/help <command>` (details).
+- Reason:
+  - Preserve legacy help UX from `reference/index_old.js`.
+- Impact:
+  - Users can discover available commands and view per-command usage text.
+
+## [2026-02-15 12:56:04 WITA] Port legacy /finduser command
+- Change:
+  - Added `/finduser <name> [/photo]` command implementation in TypeScript.
+  - Added LDAP search helper for CN matching and optional AD photo retrieval.
+- Reason:
+  - Preserve legacy AD lookup behavior from `reference/index_old.js`.
+- Impact:
+  - Requires search base DN env: `BASE_DN` (or `LDAP_BASE_DN` / `BASE_OU`).
+
+## [2026-02-15 12:59:12 WITA] Fix /finduser attribute parsing
+- Change:
+  - Fixed LDAP search entry parsing to use `ldapjs` SearchEntry `pojo.attributes`.
+  - Improved field fallbacks (mail/telephoneNumber) and photo extraction.
+- Reason:
+  - Prevent blank/Unknown results when LDAP returns attributes but entry object parsing was wrong.
+- Impact:
+  - `/finduser` now renders user fields when returned by LDAP.
+
+## [2026-02-15 13:03:33 WITA] Fix /finduser photo extraction
+- Change:
+  - Improved photo extraction to handle AD attribute variants (e.g. `thumbnailPhoto;binary`).
+  - Added base64 decode fallback when binary buffers are not exposed.
+- Reason:
+  - Prevent false "No photo available" when photo exists in AD.
+- Impact:
+  - `/finduser <name> /photo` sends photos more reliably.
+
+## [2026-02-15 13:13:00 WITA] Restore legacy DB photo lookup for /finduser
+- Change:
+  - Ported `getUserPhotoFromDB` logic from `reference/modules/db.js` into TypeScript.
+  - `/finduser ... /photo` now falls back to SQL Server `CardDB.PHOTO` by `StaffNo`.
+- Reason:
+  - Legacy implementation loads photos from the database (not from LDAP attributes).
+- Impact:
+  - Uses existing env vars: `DB_USER`, `DB_PASSWORD`, `DB_SERVER`, `DB_DATABASE` (optional `DB_PORT`).
+
+## [2026-02-15 13:24:09 WITA] Convert legacy ticket_handle module to TypeScript
+- Change:
+  - Ported `reference/modules/ticket_handle.js` into `src/features/integrations/ticketHandle.ts`.
+  - Moved ServiceDesk base URL and token to env (`SD_BASE_URL`, `SERVICE_DESK_TOKEN`).
+- Impact:
+  - Added required dependencies for ServiceDesk + attachment analysis (axios, jsdom, pdf-parse, form-data, openai, tesseract.js, @google/generative-ai).
+
+## [2026-02-15 13:32:59 WITA] Port technicianContacts to TypeScript and wire /technician command
+- Change:
+  - Added `src/features/integrations/technicianContacts.ts` to manage contacts stored in JSON.
+  - Implemented `/technician` CRUD commands in WhatsApp handler.
+- Impact:
+  - Uses `DATA_DIR` if set; otherwise reads/writes `data/technicianContacts.json`.
+
+## [2026-02-15 13:35:38 WITA] Move technician contacts default storage to data/
+- Change:
+  - Default technician contacts storage moved from `reference/` to `data/technicianContacts.json`.
+- Impact:
+  - Keeps reference folder for legacy-only; runtime now uses `data/` unless `DATA_DIR` is set.
+
+## [2026-02-15 13:36:24 WITA] Ignore local technicianContacts.json from git
+- Change:
+  - Added `data/technicianContacts.json` to `.gitignore`.
+- Reason:
+  - Keep local operational data out of the repository.
