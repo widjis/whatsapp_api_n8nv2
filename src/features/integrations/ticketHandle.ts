@@ -20,6 +20,7 @@ type ServiceDeskDisplayTime = {
 type ServiceDeskRequester = {
   name?: string;
   email_id?: string;
+  mobile?: string;
 };
 
 type ServiceDeskTechnician = {
@@ -43,6 +44,7 @@ export type ServiceDeskRequest = {
   requester?: ServiceDeskRequester;
   service_category?: ServiceDeskCategory;
   status?: ServiceDeskCategory;
+  priority?: ServiceDeskCategory;
   udf_fields?: ServiceDeskUdfFields;
   technician?: ServiceDeskTechnician;
   attachments?: ServiceDeskAttachment[];
@@ -268,6 +270,46 @@ export async function updateRequest(changeId: string, args: UpdateRequestArgs = 
 
     const message = error instanceof Error ? error.message : String(error);
     return { success: false, message: `An error occurred: ${message}` };
+  }
+}
+
+export type AssignTechnicianArgs = {
+  requestId: string;
+  groupName: string;
+  technicianName: string;
+};
+
+export async function assignTechnicianToRequest(args: AssignTechnicianArgs): Promise<UpdateRequestResult> {
+  const { requestId, groupName, technicianName } = args;
+  if (!requestId || !groupName || !technicianName) {
+    return { success: false, message: 'Invalid input parameters. Please provide requestId, groupName, technicianName.' };
+  }
+
+  const { apiBaseUrl } = getServiceDeskUrls();
+  const headers = getServiceDeskHeaders();
+  const assignUrl = `${apiBaseUrl}/requests/${requestId}/assign`;
+
+  const assignData = {
+    request: {
+      group: { name: groupName },
+      technician: { name: technicianName },
+    },
+  };
+
+  const data = `input_data=${encodeURIComponent(JSON.stringify(assignData))}`;
+
+  try {
+    await axios.put(assignUrl, data, { headers, httpsAgent: agent });
+    return { success: true, message: `Request with id: ${requestId} has been assigned successfully.` };
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const message = error.message;
+      return { success: false, message: `HTTP error occurred: ${message}${status ? ` (status ${status})` : ''}` };
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, message: `Request exception occurred: ${message}` };
   }
 }
 

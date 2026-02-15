@@ -161,7 +161,7 @@ curl -X POST http://localhost:8192/send-bulk-message \
 Built-in commands:
 - `/hi` – replies "Hello!"
 - `/help` – lists available commands
-- `/resetpassword <username> <newPassword> [/change]` – resets AD password; optionally forces change at next logon when `/change` flag is present. Access restricted to `ALLOWED_PHONE_NUMBERS`.
+- `/resetpassword <username> <newPassword> [/change]` – username can be `sAMAccountName`, UPN/email, or CN/displayName (if uniquely matched). Resets AD password; optionally forces change at next logon when `/change` flag is present. Access restricted to `ALLOWED_PHONE_NUMBERS` (works in private chats and groups).
 
 ## Implementation Notes
 - Number formatting auto-converts local `0XXXXXXXXX` to `62XXXXXXXXX@s.whatsapp.net`.

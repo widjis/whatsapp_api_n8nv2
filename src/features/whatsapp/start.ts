@@ -410,9 +410,13 @@ async function handleCommand(args: {
       }
 
       const changePasswordAtNextLogon = parts.length > 3 && parts[3] === '/change';
-      const match = remoteJid.match(/(\d+)@s\.whatsapp\.net/);
-      const requester = match?.[1];
-      if (!requester || (allowedPhoneNumbers.length > 0 && !allowedPhoneNumbers.includes(requester))) {
+      const requester = getRequesterPhoneFromMessage(msg, remoteJid);
+      if (!requester) {
+        await sock.sendMessage(remoteJid, { text: 'Invalid phone number format.' });
+        return;
+      }
+
+      if (allowedPhoneNumbers.length > 0 && !allowedPhoneNumbers.includes(requester)) {
         await sock.sendMessage(remoteJid, { text: 'Access denied.' });
         return;
       }

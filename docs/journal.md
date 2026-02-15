@@ -183,3 +183,61 @@
   - Added `/send-group-message` route with optional document/image upload and mentions.
 - Impact:
   - Supports `id` (group JID) or `name` (search by group subject) and JSON `mention` arrays.
+
+## [2026-02-15 13:53:33 WITA] Fix /resetpassword authorization for group chats
+- Change:
+  - Updated `/resetpassword` requester detection to use the sender participant when invoked in group chats.
+- Reason:
+  - Group chat messages use a group JID (`@g.us`), so extracting the phone from the chat ID breaks authorization.
+- Impact:
+  - `/resetpassword` can be executed from group chats by numbers listed in `ALLOWED_PHONE_NUMBERS`.
+
+## [2026-02-15 14:03:12 WITA] Fix LDAP resetPassword modification payload
+- Change:
+  - Updated LDAP `Change.modification` for `/resetpassword` to use Attribute-shaped objects (`{ type, values }`).
+- Reason:
+  - ldapjs `Change` requires `modification` to be an Attribute (or Attribute-shaped object), otherwise it throws `modification must be an Attribute`.
+- Impact:
+  - `/resetpassword` no longer fails early with the modification format error.
+
+## [2026-02-15 14:05:14 WITA] Resolve resetPassword DN via LDAP search
+- Change:
+  - Updated `/resetpassword` to resolve the target user's DN by searching LDAP before modifying.
+- Reason:
+  - Using `CN=<username>` fails when the command input is `sAMAccountName` (e.g. `widji.santoso`), causing `No Such Object`.
+- Impact:
+  - `/resetpassword <sAMAccountName> ...` now targets the correct DN when `BASE_DN`/`LDAP_BASE_DN`/`BASE_OU` is set.
+
+## [2026-02-15 14:07:21 WITA] Expand resetPassword lookup to match /finduser style
+- Change:
+  - Expanded `/resetpassword` user lookup to try exact and partial matches across common AD attributes.
+- Reason:
+  - Operators may provide displayName/CN fragments similar to `/finduser`, and exact `sAMAccountName` may differ from the provided identifier.
+- Impact:
+  - `/resetpassword` can resolve users via `sAMAccountName`, `userPrincipalName`, `mail`, `cn`, or `displayName` when the match is unique.
+
+## [2026-02-15 14:09:28 WITA] Improve resetPassword lookup for AD email aliases
+- Change:
+  - Added lookup fallback for mail aliases like `first.last` by searching UPN/mail/proxyAddresses patterns.
+  - Tightened search to `objectCategory=person` and `objectClass=user`.
+- Reason:
+  - Some environments use different `sAMAccountName` formats; operators often know the email alias instead.
+- Impact:
+  - `/resetpassword widji.santoso ...` can resolve accounts where UPN/mail is `widji.santoso@...`.
+
+## [2026-02-15 14:03:17 WITA] Implement legacy ServiceDesk webhook in TypeScript HTTP server
+- Change:
+  - Added `/webhook` route to send WhatsApp notifications on new/updated ServiceDesk tickets.
+  - Added ticket state storage (Redis when available, otherwise in-memory) to detect technician/status/priority changes.
+  - Added ServiceDesk technician assignment helper via `PUT /requests/:id/assign`.
+- Impact:
+  - Requires `SD_BASE_URL` and `SERVICE_DESK_TOKEN` (already used by ServiceDesk integration).
+  - Optional: `REDIS_HOST`/`REDIS_PORT` for persistent state across restarts; falls back to in-memory.
+
+## [2026-02-15 14:14:55 WITA] Fix resetPassword DN extraction from LDAP search entries
+- Change:
+  - Updated DN extraction for `/resetpassword` lookup to use `ldapjs` SearchEntry `pojo.objectName`.
+- Reason:
+  - `SearchEntry.objectName` may not be a string in ldapjs, causing DN resolution to return zero matches.
+- Impact:
+  - `/resetpassword <sAMAccountName> ...` can correctly resolve the target DN and proceed with password reset.

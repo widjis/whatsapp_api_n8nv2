@@ -53,6 +53,62 @@ export type FindUsersResult =
       error: string;
     };
 
+export async function findUserMobileByEmail(args: { email: string }): Promise<string | null> {
+  const email = args.email.trim().toLowerCase();
+  if (!email) return null;
+
+  const baseDn = process.env.BASE_DN ?? process.env.LDAP_BASE_DN ?? process.env.BASE_OU ?? '';
+  if (!baseDn) return null;
+
+  const client = await getLdapClient();
+  const escaped = escapeLdapFilterValue(email);
+  const filter = `(&(mail=${escaped}))`;
+
+  try {
+    const mobile = await new Promise<string | null>((resolve, reject) => {
+      client.search(
+        baseDn,
+        {
+          scope: 'sub',
+          filter,
+          attributes: ['mobile', 'mobileNumber', 'telephoneNumber'],
+        },
+        (err, res) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+
+          let value: string | null = null;
+          res.on('searchEntry', (entry) => {
+            if (value) return;
+            const map = buildAttributeMap(entry);
+            value =
+              pickFirstAttr(map, 'mobile') ??
+              pickFirstAttr(map, 'mobileNumber') ??
+              pickFirstAttr(map, 'telephoneNumber') ??
+              null;
+          });
+
+          res.on('error', (e) => {
+            reject(e);
+          });
+
+          res.on('end', () => {
+            resolve(value);
+          });
+        }
+      );
+    });
+
+    client.unbind();
+    return mobile;
+  } catch {
+    client.unbind();
+    return null;
+  }
+}
+
 function escapeLdapFilterValue(value: string): string {
   return value
     .replace(/\\/g, '\\5c')
@@ -60,6 +116,109 @@ function escapeLdapFilterValue(value: string): string {
     .replace(/\(/g, '\\28')
     .replace(/\)/g, '\\29')
     .replace(/\u0000/g, '\\00');
+}
+
+type ResolveUserDnResult = { ok: true; dn: string } | { ok: false; error: string };
+
+async function searchUserDns(args: {
+  client: ldap.Client;
+  baseDn: string;
+  filter: string;
+  sizeLimit: number;
+}): Promise<string[]> {
+  return await new Promise<string[]>((resolve, reject) => {
+    args.client.search(
+      args.baseDn,
+      {
+        scope: 'sub',
+        filter: args.filter,
+        attributes: ['distinguishedName'],
+        sizeLimit: args.sizeLimit,
+      },
+      (err, res) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        const results: string[] = [];
+        res.on('searchEntry', (entry) => {
+          const dn = entry.pojo.objectName;
+          if (typeof dn === 'string' && dn.trim()) results.push(dn);
+        });
+
+        res.on('error', (e) => {
+          reject(e);
+        });
+
+        res.on('end', () => {
+          resolve(results);
+        });
+      }
+    );
+  });
+}
+
+async function resolveUserDn(args: { client: ldap.Client; identifier: string }): Promise<ResolveUserDnResult> {
+  const identifier = args.identifier.trim();
+  if (!identifier) return { ok: false, error: 'User identifier is required.' };
+  if (identifier.includes(',')) return { ok: true, dn: identifier };
+
+  const baseDn = process.env.BASE_DN ?? process.env.LDAP_BASE_DN ?? process.env.BASE_OU ?? '';
+  if (!baseDn) {
+    return { ok: false, error: 'BASE_DN (or LDAP_BASE_DN / BASE_OU) must be set in environment.' };
+  }
+
+  const escaped = escapeLdapFilterValue(identifier);
+  const exactFilter = `(&(|(sAMAccountName=${escaped})(userPrincipalName=${escaped})(mail=${escaped})(cn=${escaped}))(objectCategory=person)(objectClass=user))`;
+  const exactDns = await searchUserDns({ client: args.client, baseDn, filter: exactFilter, sizeLimit: 2 });
+  if (exactDns.length === 1) return { ok: true, dn: exactDns[0] };
+  if (exactDns.length > 1) {
+    return {
+      ok: false,
+      error: 'Multiple users matched. Provide full DN to disambiguate.',
+    };
+  }
+
+  const shouldTryMailAlias = !identifier.includes('@') && identifier.includes('.');
+  if (shouldTryMailAlias) {
+    const aliasFilter = `(&(|(userPrincipalName=${escaped}@*)(mail=${escaped}@*)(proxyAddresses=smtp:${escaped}@*)(proxyAddresses=SMTP:${escaped}@*)(mailNickname=${escaped}))(objectCategory=person)(objectClass=user))`;
+    const aliasDns = await searchUserDns({ client: args.client, baseDn, filter: aliasFilter, sizeLimit: 2 });
+    if (aliasDns.length === 1) return { ok: true, dn: aliasDns[0] };
+    if (aliasDns.length > 1) {
+      return {
+        ok: false,
+        error: 'Multiple users matched. Provide full DN to disambiguate.',
+      };
+    }
+
+    const tokenPattern = identifier
+      .split('.')
+      .filter(Boolean)
+      .map(escapeLdapFilterValue)
+      .join('*');
+    const tokensFilter = `(&(|(cn=*${tokenPattern}*)(displayName=*${tokenPattern}*))(objectCategory=person)(objectClass=user))`;
+    const tokenDns = await searchUserDns({ client: args.client, baseDn, filter: tokensFilter, sizeLimit: 2 });
+    if (tokenDns.length === 1) return { ok: true, dn: tokenDns[0] };
+    if (tokenDns.length > 1) {
+      return {
+        ok: false,
+        error: 'Multiple users matched. Provide full DN to disambiguate.',
+      };
+    }
+  }
+
+  const likeFilter = `(&(|(sAMAccountName=*${escaped}*)(userPrincipalName=*${escaped}*)(mail=*${escaped}*)(cn=*${escaped}*)(displayName=*${escaped}*))(objectCategory=person)(objectClass=user))`;
+  const likeDns = await searchUserDns({ client: args.client, baseDn, filter: likeFilter, sizeLimit: 5 });
+  if (likeDns.length === 1) return { ok: true, dn: likeDns[0] };
+  if (likeDns.length > 1) {
+    return {
+      ok: false,
+      error: 'Multiple users matched. Provide full DN to disambiguate.',
+    };
+  }
+
+  return { ok: false, error: 'User not found.' };
 }
 
 function getFirstString(value: unknown): string | undefined {
@@ -458,13 +617,24 @@ export async function resetPassword(args: {
   const { upn, newPassword, changePasswordAtNextLogon } = args;
   try {
     const client = await getLdapClient();
-    const baseOu = process.env.BASE_OU ?? '';
-    const userDN = upn.includes(',') ? upn : baseOu ? `CN=${upn},${baseOu}` : `CN=${upn}`;
+    const resolved = await resolveUserDn({ client, identifier: upn });
+    if (!resolved.ok) {
+      client.unbind();
+      return {
+        success: false,
+        error: `${resolved.error} Provide full DN or set BASE_DN/LDAP_BASE_DN/BASE_OU correctly.`,
+      };
+    }
+
+    const userDN = resolved.dn;
 
     const changes: ldap.Change[] = [
       new ldap.Change({
         operation: 'replace',
-        modification: { unicodePwd: Buffer.from(`\"${newPassword}\"`, 'utf16le') },
+        modification: {
+          type: 'unicodePwd',
+          values: [Buffer.from(`"${newPassword}"`, 'utf16le')],
+        },
       }),
     ];
 
@@ -472,7 +642,10 @@ export async function resetPassword(args: {
       changes.push(
         new ldap.Change({
           operation: 'replace',
-          modification: { pwdLastSet: '0' },
+          modification: {
+            type: 'pwdLastSet',
+            values: ['0'],
+          },
         })
       );
     }
