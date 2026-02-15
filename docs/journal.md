@@ -320,6 +320,10 @@
 ## [2026-02-16 00:46:21 WITA] Log reply gateway decisions
 - Change:
   - Added gateway decision logs so it's clear when replies are suppressed by the gateway.
+
+## [2026-02-16 00:54:08 WITA] Always reply to greetings in gateway
+- Change:
+  - Updated reply gateway rules to always reply to simple greetings.
   - Added `SERVICE_CATEGORY_AI_ENABLED=false` option to disable category AI.
 
 ## [2026-02-15 16:29:25 WITA] Standardize ticketing WhatsApp notifications

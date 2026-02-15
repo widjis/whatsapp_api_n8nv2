@@ -239,6 +239,21 @@ function decideReplyGatewayHeuristic(messageText: string, hasAttachment: boolean
 
   if (hasAttachment) return { action: 'reply', reason: 'has_attachment' };
 
+  const greetingPatterns: RegExp[] = [
+    /^hi\b[!.\s]*$/i,
+    /^hello\b[!.\s]*$/i,
+    /^hey\b[!.\s]*$/i,
+    /^halo\b[!.\s]*$/i,
+    /^hai\b[!.\s]*$/i,
+    /^pagi\b[!.\s]*$/i,
+    /^siang\b[!.\s]*$/i,
+    /^sore\b[!.\s]*$/i,
+    /^malam\b[!.\s]*$/i,
+    /^ass?alamu\s*'?alaikum\b[!.\s]*$/i,
+    /^selamat\s+(pagi|siang|sore|malam)\b[!.\s]*$/i,
+  ];
+  if (greetingPatterns.some((p) => p.test(lower))) return { action: 'reply', reason: 'greeting' };
+
   const mutePatterns: RegExp[] = [
     /\b(stop|stahp)\b.*\b(reply|replies|balas|jawab)\b/i,
     /\b(don'?t|do not)\b\s+\b(reply|respond)\b/i,
@@ -325,6 +340,7 @@ async function decideReplyGatewayAi(messageText: string, hasAttachment: boolean)
   const system =
     'You are a WhatsApp bot reply gateway. Decide whether the bot should reply to the user message. ' +
     'If the user is annoyed or explicitly asks to stop, choose action "mute" (stop replying until /unmute). ' +
+    'Always reply to greetings (e.g., hi/hello/hey/halo/hai/selamat pagi). ' +
     'If no response is needed (acknowledgment, filler), choose "no_reply". Otherwise choose "reply". ' +
     'Return JSON only with keys: action, reason.';
   const user = `MESSAGE:\n${content}`;
