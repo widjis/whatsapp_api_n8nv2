@@ -28,6 +28,17 @@ export async function getLdapClient(): Promise<ldap.Client> {
   return client;
 }
 
+export type AdUserInfo = {
+  name: string;
+  email: string | null;
+  title: string | null;
+  department: string | null;
+  mobile: string | null;
+  telephoneNumber: string | null;
+  employeeId: string | null;
+  source: 'ldap' | 'push_name' | 'unknown';
+};
+
 type FoundUser = {
   displayName: string;
   userPrincipalName?: string;
@@ -107,6 +118,199 @@ export async function findUserMobileByEmail(args: { email: string }): Promise<st
     client.unbind();
     return null;
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizePhoneDigits(input: string): string {
+  return input.replace(/\D/g, '');
+}
+
+function buildPhoneSearchFilter(phoneDigits: string): string {
+  const escaped = escapeLdapFilterValue(phoneDigits);
+  const raw = process.env.LDAP_SEARCH_FILTER;
+  if (raw && raw.includes('{phone}')) {
+    return raw.replace(/\{phone\}/g, escaped);
+  }
+
+  return `(&(|(telephoneNumber=*${escaped}*)(mobile=*${escaped}*)(mobileNumber=*${escaped}*))(objectCategory=person)(objectClass=user))`;
+}
+
+export async function findAdUserByPhone(args: {
+  phone: string;
+  pushName: string | null;
+}): Promise<AdUserInfo | null> {
+  const ldapEnabled = process.env.LDAP_ENABLED ? process.env.LDAP_ENABLED === 'true' : true;
+  if (!ldapEnabled) {
+    return args.pushName
+      ? {
+          name: args.pushName,
+          email: null,
+          title: null,
+          department: null,
+          mobile: null,
+          telephoneNumber: null,
+          employeeId: null,
+          source: 'push_name',
+        }
+      : null;
+  }
+
+  const baseDn = process.env.LDAP_BASE_DN ?? process.env.BASE_DN ?? process.env.BASE_OU ?? '';
+  if (!baseDn) {
+    return args.pushName
+      ? {
+          name: args.pushName,
+          email: null,
+          title: null,
+          department: null,
+          mobile: null,
+          telephoneNumber: null,
+          employeeId: null,
+          source: 'push_name',
+        }
+      : null;
+  }
+
+  const phoneDigits = normalizePhoneDigits(args.phone);
+  if (!phoneDigits) {
+    return args.pushName
+      ? {
+          name: args.pushName,
+          email: null,
+          title: null,
+          department: null,
+          mobile: null,
+          telephoneNumber: null,
+          employeeId: null,
+          source: 'push_name',
+        }
+      : null;
+  }
+
+  const timeoutMs = Number(process.env.LDAP_TIMEOUT ?? '10000');
+  const maxRetries = Number(process.env.LDAP_MAX_RETRIES ?? '3');
+  const retryDelayMs = Number(process.env.LDAP_RETRY_DELAY ?? '1000');
+  const filter = buildPhoneSearchFilter(phoneDigits);
+
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= Math.max(1, maxRetries); attempt += 1) {
+    const client = await getLdapClient();
+    try {
+      const result = await new Promise<AdUserInfo | null>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error('LDAP search timeout'));
+        }, timeoutMs);
+
+        client.search(
+          baseDn,
+          {
+            scope: 'sub',
+            filter,
+            attributes: ['displayName', 'cn', 'mail', 'title', 'department', 'mobile', 'mobileNumber', 'telephoneNumber', 'employeeID'],
+            sizeLimit: 2,
+          },
+          (err, res) => {
+            if (err) {
+              clearTimeout(timer);
+              reject(err);
+              return;
+            }
+
+            const users: AdUserInfo[] = [];
+            res.on('searchEntry', (entry) => {
+              const map = buildAttributeMap(entry);
+              const name =
+                pickFirstAttr(map, 'displayName') ??
+                pickFirstAttr(map, 'cn') ??
+                pickFirstAttr(map, 'name') ??
+                pickFirstAttr(map, 'sAMAccountName') ??
+                'Unknown';
+
+              users.push({
+                name,
+                email: pickFirstAttr(map, 'mail') ?? pickFirstAttr(map, 'userPrincipalName') ?? null,
+                title: pickFirstAttr(map, 'title') ?? null,
+                department: pickFirstAttr(map, 'department') ?? null,
+                mobile: pickFirstAttr(map, 'mobile') ?? pickFirstAttr(map, 'mobileNumber') ?? null,
+                telephoneNumber: pickFirstAttr(map, 'telephoneNumber') ?? null,
+                employeeId: pickFirstAttr(map, 'employeeID') ?? null,
+                source: 'ldap',
+              });
+            });
+
+            res.on('error', (e) => {
+              clearTimeout(timer);
+              reject(e);
+            });
+
+            res.on('end', () => {
+              clearTimeout(timer);
+              if (users.length === 1) {
+                resolve(users[0]);
+                return;
+              }
+              resolve(null);
+            });
+          }
+        );
+      });
+
+      client.unbind();
+      if (result) return result;
+
+      if (args.pushName) {
+        return {
+          name: args.pushName,
+          email: null,
+          title: null,
+          department: null,
+          mobile: null,
+          telephoneNumber: null,
+          employeeId: null,
+          source: 'push_name',
+        };
+      }
+      return null;
+    } catch (error) {
+      client.unbind();
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt < Math.max(1, maxRetries)) {
+        await sleep(retryDelayMs);
+      }
+      continue;
+    }
+  }
+
+  if (args.pushName) {
+    return {
+      name: args.pushName,
+      email: null,
+      title: null,
+      department: null,
+      mobile: null,
+      telephoneNumber: null,
+      employeeId: null,
+      source: 'push_name',
+    };
+  }
+
+  if (lastError) {
+    return {
+      name: 'Unknown',
+      email: null,
+      title: null,
+      department: null,
+      mobile: null,
+      telephoneNumber: null,
+      employeeId: null,
+      source: 'unknown',
+    };
+  }
+
+  return null;
 }
 
 export type BitLockerRecoveryKey = {

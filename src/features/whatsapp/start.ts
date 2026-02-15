@@ -15,7 +15,14 @@ import type { Server as SocketIoServer } from 'socket.io';
 import type { InMemoryStore } from './store.js';
 import { resolveSenderNumber } from './utils.js';
 import { handleN8nIntegration, type N8nAttachment } from '../integrations/n8n.js';
-import { findUsersByCommonName, getBitLockerInfo, renderFindUserCaption, resetPassword } from '../integrations/ldap.js';
+import {
+  findAdUserByPhone,
+  findUsersByCommonName,
+  getBitLockerInfo,
+  renderFindUserCaption,
+  resetPassword,
+  type AdUserInfo,
+} from '../integrations/ldap.js';
 import { buildGetAssetReply, CATEGORY_MAPPING } from '../integrations/snipeIt.js';
 import {
   addTechnicianContact,
@@ -41,6 +48,23 @@ const PRESENCE_BUFFER_ENABLED = process.env.PRESENCE_BUFFER_ENABLED === 'true';
 const PRESENCE_BUFFER_MAX_TIMEOUT_MS = Number(process.env.PRESENCE_BUFFER_MAX_TIMEOUT ?? '10000');
 const PRESENCE_BUFFER_STOP_DELAY_MS = Number(process.env.PRESENCE_BUFFER_STOP_DELAY ?? '2000');
 const PRESENCE_SUBSCRIPTION_ENABLED = process.env.PRESENCE_SUBSCRIPTION_ENABLED === 'true';
+const DEBUG_TICKET_REACTIONS = process.env.DEBUG_TICKET_REACTIONS === 'true';
+
+type TicketReactionDebugPayload = {
+  event: 'claim' | 'unclaim';
+  remoteJid: string;
+  messageId: string;
+  participantRaw?: string;
+  participantResolved?: string;
+  participantDigits?: string | null;
+  sockUserJid?: string;
+  sockDigits?: string | null;
+};
+
+function logTicketReactionDebug(payload: TicketReactionDebugPayload): void {
+  if (!DEBUG_TICKET_REACTIONS) return;
+  console.log('[ticket-reaction]', JSON.stringify(payload));
+}
 
 type PresenceState = { isTyping: boolean; lastUpdateMs: number };
 type BufferedMessage = {
@@ -65,6 +89,26 @@ type MessageBuffer = {
 const messageBuffers = new Map<string, MessageBuffer>();
 const presenceStatus = new Map<string, PresenceState>();
 
+const adUserCache = new Map<string, { value: AdUserInfo | null; expiresAtMs: number }>();
+
+function getAdUserCacheTtlMs(): number {
+  const raw = process.env.ADUSER_CACHE_TTL_MS;
+  const value = raw ? Number(raw) : 600_000;
+  if (!Number.isFinite(value) || value <= 0) return 600_000;
+  return value;
+}
+
+async function resolveAdUser(args: { senderDigits: string | null; senderJid: string; pushName: string | null }): Promise<AdUserInfo | null> {
+  const key = args.senderDigits ?? args.senderJid;
+  const cached = adUserCache.get(key);
+  const now = Date.now();
+  if (cached && cached.expiresAtMs > now) return cached.value;
+
+  const value = await findAdUserByPhone({ phone: key, pushName: args.pushName });
+  adUserCache.set(key, { value, expiresAtMs: now + getAdUserCacheTtlMs() });
+  return value;
+}
+
 function getBufferKey(args: { remoteJid: string; senderNumber: string }): string {
   return `${args.remoteJid}|${args.senderNumber}`;
 }
@@ -74,7 +118,6 @@ function subscribeToPresence(args: { sock: WASocket; jid: string }): void {
   try {
     args.sock.presenceSubscribe(args.jid);
   } catch {
-    // ignore
   }
 }
 
@@ -129,7 +172,6 @@ function scheduleFlush(args: {
 
 function addToMessageBuffer(item: BufferedMessage): boolean {
   if (!MESSAGE_BUFFER_ENABLED) return false;
-  if (!item.shouldReply) return true;
 
   const key = getBufferKey({ remoteJid: item.remoteJid, senderNumber: item.senderNumber });
   const now = Date.now();
@@ -190,6 +232,9 @@ async function flushMessageBuffer(key: string): Promise<void> {
     remoteJid: first.remoteJid,
     messageContent: combinedText || first.text,
     attachments: combinedAttachments,
+    messageType: undefined,
+    mentionedJids: undefined,
+    shouldReply: first.shouldReply,
     deps,
   });
 }
@@ -399,6 +444,8 @@ let activeDeps: StartWhatsAppDeps | null = null;
 type ParsedIncomingMessage = {
   text: string;
   attachments: N8nAttachment[];
+  messageType: 'text' | 'extended_text' | 'image' | 'video' | 'audio' | 'document' | 'unknown';
+  mentionedJids: string[];
 };
 
 function isNotifyUpsertPayload(
@@ -507,16 +554,29 @@ async function handleTicketReactionClaim(args: {
 }): Promise<void> {
   const sockUserJid = args.sock.user?.id;
   const sockDigits = typeof sockUserJid === 'string' ? extractPhoneDigitsFromJid(sockUserJid) : null;
+  if (typeof sockUserJid === 'string' && args.participantRaw === sockUserJid) return;
 
   const participantJid = resolveParticipantJid({
     participant: args.participantRaw,
     store: args.deps.store,
     authInfoDir: args.deps.authInfoDir,
   });
+  if (typeof sockUserJid === 'string' && participantJid === sockUserJid) return;
   const digits = extractPhoneDigitsFromJid(participantJid);
   if (!digits) return;
 
   if (sockDigits && digits === sockDigits) return;
+
+  logTicketReactionDebug({
+    event: 'claim',
+    remoteJid: args.remoteJid,
+    messageId: args.messageId,
+    participantRaw: args.participantRaw,
+    participantResolved: participantJid,
+    participantDigits: digits,
+    sockUserJid: typeof sockUserJid === 'string' ? sockUserJid : undefined,
+    sockDigits,
+  });
 
   const reacterPhone = normalizeTechnicianPhoneNumber(digits);
   const tech = getContactByPhone(reacterPhone);
@@ -637,15 +697,28 @@ async function handleTicketReactionUnclaim(args: {
 }): Promise<void> {
   const sockUserJid = args.sock.user?.id;
   const sockDigits = typeof sockUserJid === 'string' ? extractPhoneDigitsFromJid(sockUserJid) : null;
+  if (typeof sockUserJid === 'string' && args.participantRaw === sockUserJid) return;
 
   const participantJid = resolveParticipantJid({
     participant: args.participantRaw,
     store: args.deps.store,
     authInfoDir: args.deps.authInfoDir,
   });
+  if (typeof sockUserJid === 'string' && participantJid === sockUserJid) return;
   const digits = extractPhoneDigitsFromJid(participantJid);
   if (!digits) return;
   if (sockDigits && digits === sockDigits) return;
+
+  logTicketReactionDebug({
+    event: 'unclaim',
+    remoteJid: args.remoteJid,
+    messageId: args.messageId,
+    participantRaw: args.participantRaw,
+    participantResolved: participantJid,
+    participantDigits: digits,
+    sockUserJid: typeof sockUserJid === 'string' ? sockUserJid : undefined,
+    sockDigits,
+  });
 
   const reacterPhone = normalizeTechnicianPhoneNumber(digits);
   const stored = await loadTicketNotification({ remoteJid: args.remoteJid, messageId: args.messageId });
@@ -757,7 +830,7 @@ function resolveParticipantJid(args: { participant: string; store: InMemoryStore
 }
 
 function extractPhoneDigitsFromJid(jid: string): string | null {
-  const match = jid.match(/(\d+)(?::\d+)?@s\.whatsapp\.net/);
+  const match = jid.match(/(\d+)(?::\d+)?@(s\.whatsapp\.net|c\.us)/);
   return match?.[1] ?? null;
 }
 
@@ -824,20 +897,28 @@ function isTaggedInGroup(args: {
 }
 
 async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessageInfo }): Promise<ParsedIncomingMessage> {
-  if (!args.msg.key) return { text: '', attachments: [] };
+  if (!args.msg.key) return { text: '', attachments: [], messageType: 'unknown', mentionedJids: [] };
   const rawMessage = unwrapEphemeralMessage(args.msg.message);
-  if (!rawMessage) return { text: '', attachments: [] };
+  if (!rawMessage) return { text: '', attachments: [], messageType: 'unknown', mentionedJids: [] };
 
-  if (rawMessage.conversation) return { text: rawMessage.conversation, attachments: [] };
-  if (rawMessage.extendedTextMessage?.text) return { text: rawMessage.extendedTextMessage.text, attachments: [] };
+  const mentionedJids = extractMentionedJids(rawMessage);
+
+  if (rawMessage.conversation) return { text: rawMessage.conversation, attachments: [], messageType: 'text', mentionedJids };
+  if (rawMessage.extendedTextMessage?.text)
+    return { text: rawMessage.extendedTextMessage.text, attachments: [], messageType: 'extended_text', mentionedJids };
   if (rawMessage.buttonsResponseMessage?.selectedButtonId) {
-    return { text: rawMessage.buttonsResponseMessage.selectedButtonId, attachments: [] };
+    return { text: rawMessage.buttonsResponseMessage.selectedButtonId, attachments: [], messageType: 'unknown', mentionedJids };
   }
   if (rawMessage.listResponseMessage?.singleSelectReply?.selectedRowId) {
-    return { text: rawMessage.listResponseMessage.singleSelectReply.selectedRowId, attachments: [] };
+    return {
+      text: rawMessage.listResponseMessage.singleSelectReply.selectedRowId,
+      attachments: [],
+      messageType: 'unknown',
+      mentionedJids,
+    };
   }
   if (rawMessage.templateButtonReplyMessage?.selectedId) {
-    return { text: rawMessage.templateButtonReplyMessage.selectedId, attachments: [] };
+    return { text: rawMessage.templateButtonReplyMessage.selectedId, attachments: [], messageType: 'unknown', mentionedJids };
   }
 
   const msgForDownload: WAMessage = { ...args.msg, key: args.msg.key, message: rawMessage };
@@ -873,7 +954,7 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       dataBase64,
       error: dataBase64 ? null : 'Failed to download image',
     };
-    return { text: caption || 'Image message received', attachments: [attachment] };
+    return { text: caption || 'Image message received', attachments: [attachment], messageType: 'image', mentionedJids };
   }
 
   if (rawMessage.videoMessage) {
@@ -892,7 +973,7 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       dataBase64,
       error: dataBase64 ? null : 'Failed to download video',
     };
-    return { text: caption || 'Video message received', attachments: [attachment] };
+    return { text: caption || 'Video message received', attachments: [attachment], messageType: 'video', mentionedJids };
   }
 
   if (rawMessage.audioMessage) {
@@ -911,7 +992,12 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       dataBase64,
       error: dataBase64 ? null : 'Failed to download audio',
     };
-    return { text: isPtt ? 'Voice message received' : 'Audio message received', attachments: [attachment] };
+    return {
+      text: isPtt ? 'Voice message received' : 'Audio message received',
+      attachments: [attachment],
+      messageType: 'audio',
+      mentionedJids,
+    };
   }
 
   if (rawMessage.documentMessage) {
@@ -931,10 +1017,10 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       error: dataBase64 ? null : 'Failed to download document',
     };
     const fallbackText = attachment.fileName ? `Document: ${attachment.fileName}` : 'Document message received';
-    return { text: caption || fallbackText, attachments: [attachment] };
+    return { text: caption || fallbackText, attachments: [attachment], messageType: 'document', mentionedJids };
   }
 
-  return { text: 'Media/Other', attachments: [] };
+  return { text: 'Media/Other', attachments: [], messageType: 'unknown', mentionedJids };
 }
 
 function pickReactionSenderFromUpsertMessage(args: {
@@ -954,11 +1040,13 @@ function pickReactionSenderFromUpsertMessage(args: {
 
   const candidates = [viaTopLevel, viaKey].filter((v): v is string => typeof v === 'string' && v.length > 0);
   for (const candidate of candidates) {
+    if (typeof sockUserJid === 'string' && candidate === sockUserJid) continue;
     const resolved = resolveParticipantJid({
       participant: candidate,
       store: args.deps.store,
       authInfoDir: args.deps.authInfoDir,
     });
+    if (typeof sockUserJid === 'string' && resolved === sockUserJid) continue;
     const digits = extractPhoneDigitsFromJid(resolved);
     if (sockDigits && digits && digits === sockDigits) continue;
     return candidate;
@@ -1049,17 +1137,27 @@ async function handleMessage(args: {
   remoteJid: string;
   messageContent: string;
   attachments: N8nAttachment[];
+  messageType?: string;
+  mentionedJids?: string[];
+  shouldReply?: boolean;
   deps: StartWhatsAppDeps;
 }): Promise<void> {
   const { sock, msg, remoteJid, messageContent, attachments, deps } = args;
   const isGroup = remoteJid.endsWith('@g.us');
   const senderNumber = resolveSenderNumber({ msg, remoteJid, store: deps.store, authInfoDir: deps.authInfoDir });
+  const senderDigits = extractPhoneDigitsFromJid(senderNumber);
   const pushName = msg.pushName ?? 'Unknown';
+  const shouldReply = args.shouldReply !== false;
   if (isGroup) console.log(`Group Message from ${pushName} (${senderNumber}) in Group ${remoteJid}`);
   else console.log(`Private Message from ${pushName} (${senderNumber})`);
   console.log(`Content: ${messageContent}`);
 
   if (!deps.n8nWebhookUrl) return;
+
+  const botJid = sock.user?.id;
+  const botNumber = typeof botJid === 'string' && botJid.length > 0 ? botJid : null;
+
+  const adUser = await resolveAdUser({ senderDigits, senderJid: senderNumber, pushName });
 
   await handleN8nIntegration({
     sock,
@@ -1067,12 +1165,25 @@ async function handleMessage(args: {
     payload: {
       message: messageContent,
       from: senderNumber,
+      fromNumber: senderDigits ?? senderNumber,
+      replyTo: remoteJid,
       pushName,
       isGroup,
       groupId: isGroup ? remoteJid : null,
       timestamp: new Date().toISOString(),
       messageId: msg.key?.id,
       attachments: attachments.length > 0 ? attachments : undefined,
+      attachmentCount: attachments.length,
+      hasAttachment: attachments.length > 0,
+      attachmentType: attachments[0]?.type ?? null,
+      mediaInfo: attachments[0] ?? null,
+      media: attachments[0] ?? null,
+      messageType: args.messageType ?? null,
+      mentionedJids: args.mentionedJids ?? [],
+      botNumber,
+      botLid: null,
+      shouldReply,
+      adUser,
     },
     config: { webhookUrl: deps.n8nWebhookUrl, timeoutMs: deps.n8nTimeoutMs },
   });
@@ -1544,7 +1655,16 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
 
         if (buffered) continue;
 
-        await handleMessage({ sock: currentSock, msg, remoteJid, messageContent, attachments: parsed.attachments, deps });
+        await handleMessage({
+          sock: currentSock,
+          msg,
+          remoteJid,
+          messageContent,
+          attachments: parsed.attachments,
+          messageType: parsed.messageType,
+          mentionedJids: parsed.mentionedJids,
+          deps,
+        });
       }
     }
   });

@@ -361,6 +361,11 @@
 - Change:
   - Added Docker rebuild steps to avoid running an old baked image.
 
+## [2026-02-15 20:06:04 WITA] Improve bot reactor detection in Docker
+- Change:
+  - Reaction sender picking now also skips bot JID when sock user is @c.us.
+  - Added DEBUG_TICKET_REACTIONS toggle for diagnosing reaction participant formats.
+
 ## [2026-02-15 19:32:46 WITA] Port legacy message reply rules and media attachments
 - Change:
   - Updated `messages.upsert` handling to reply to direct chats unless the message is a `/command`.
@@ -373,3 +378,8 @@
   - Added legacy-style fallback reply when n8n response is empty or webhook fails.
   - Added legacy-style typing indicator support (`TYPING_ENABLED=true`) for n8n replies.
   - Added optional message buffering controls (`MESSAGE_BUFFER_ENABLED` and presence buffering flags).
+
+## [2026-02-15 20:01:42 WITA] Match legacy n8n payload keys for compatibility
+- Change:
+  - Added legacy-compatible payload fields (`fromNumber`, `replyTo`, `messageType`, `mediaInfo`, `attachmentCount`).
+  - Added mentioned JIDs extraction and forwarded into n8n payload.

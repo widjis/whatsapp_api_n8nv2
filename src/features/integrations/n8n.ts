@@ -16,15 +16,39 @@ export type N8nAttachment = {
   error: string | null;
 };
 
+export type N8nAdUser = {
+  name: string;
+  email: string | null;
+  title: string | null;
+  department: string | null;
+  mobile: string | null;
+  telephoneNumber: string | null;
+  employeeId: string | null;
+  source: 'ldap' | 'push_name' | 'unknown';
+};
+
 type N8nPayload = {
   message: string;
   from: string;
+  fromNumber?: string;
+  replyTo?: string;
   pushName: string;
   isGroup: boolean;
   groupId: string | null;
   timestamp: string;
   messageId: string | null | undefined;
   attachments?: N8nAttachment[];
+  attachmentCount?: number;
+  hasAttachment?: boolean;
+  attachmentType?: string | null;
+  mediaInfo?: N8nAttachment | null;
+  media?: N8nAttachment | null;
+  messageType?: string | null;
+  mentionedJids?: string[];
+  botNumber?: string | null;
+  botLid?: string | null;
+  shouldReply?: boolean;
+  adUser?: N8nAdUser | null;
 };
 
 type N8nConfig = {
@@ -84,7 +108,6 @@ async function sendReplyWithTyping(args: { sock: WASocket; remoteJid: string; te
     await args.sock.sendPresenceUpdate('composing', args.remoteJid);
     await sleep(1500);
   } catch {
-    // ignore
   }
 
   await args.sock.sendMessage(args.remoteJid, { text: args.text });
@@ -92,7 +115,6 @@ async function sendReplyWithTyping(args: { sock: WASocket; remoteJid: string; te
   try {
     await args.sock.sendPresenceUpdate('available', args.remoteJid);
   } catch {
-    // ignore
   }
 }
 
@@ -199,6 +221,9 @@ export async function handleN8nIntegration(args: {
       ? await postHttpsJson({ url: config.webhookUrl, payload, timeoutMs: config.timeoutMs })
       : await postFetchJson({ url: config.webhookUrl, payload });
 
+    const shouldReply = payload.shouldReply !== false;
+    if (!shouldReply) return;
+
     const replyText = extractReplyText(data);
     if (replyText) {
       await sendReplyWithTyping({ sock, remoteJid, text: replyText, isGroup: payload.isGroup });
@@ -208,6 +233,8 @@ export async function handleN8nIntegration(args: {
     await sendDefaultReply({ sock, remoteJid, isGroup: payload.isGroup });
   } catch (error) {
     console.error('Error sending to N8N:', error);
+    const shouldReply = payload.shouldReply !== false;
+    if (!shouldReply) return;
     await sendDefaultReply({ sock, remoteJid, isGroup: payload.isGroup });
   }
 }

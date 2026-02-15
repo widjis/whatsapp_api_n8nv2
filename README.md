@@ -42,6 +42,9 @@ N8N_TIMEOUT=5000
 OPENAI_API_KEY=yourOpenAiKey
 SERVICE_CATEGORY_AI_ENABLED=true
 
+# Debug (optional)
+DEBUG_TICKET_REACTIONS=true
+
 # LDAP (required for /resetpassword)
 LDAP_URL=ldap://10.60.10.56:389
 BIND_DN=CN=ldapbind,OU=Service Accounts,DC=example,DC=com
