@@ -201,6 +201,26 @@ const replyMuteStateBySender = new Map<string, ReplyMuteState>();
 const REPLY_GATEWAY_ENABLED = process.env.REPLY_GATEWAY_ENABLED !== 'false';
 const REPLY_GATEWAY_AI_ENABLED = process.env.REPLY_GATEWAY_AI_ENABLED !== 'false';
 const REPLY_GATEWAY_MODEL = (process.env.REPLY_GATEWAY_MODEL?.trim() || 'gpt-4o-mini').trim();
+const REPLY_GATEWAY_DEBUG = process.env.REPLY_GATEWAY_DEBUG === 'true';
+
+type ReplyGatewayDecisionSource = 'mute_state' | 'heuristic' | 'ai' | 'default';
+
+type ReplyGatewayLogPayload = {
+  senderKey: string;
+  senderNumber: string;
+  action: ReplyGatewayAction;
+  reason: string;
+  source: ReplyGatewayDecisionSource;
+  initialShouldReply: boolean;
+  hasAttachment: boolean;
+  messageLen: number;
+  messagePreview: string;
+};
+
+function logReplyGatewayDecision(payload: ReplyGatewayLogPayload): void {
+  if (!REPLY_GATEWAY_DEBUG && payload.action === 'reply') return;
+  console.log('[reply-gateway]', JSON.stringify(payload));
+}
 
 function getReplyGatewaySenderKey(senderJid: string): string {
   return extractPhoneDigitsFromJid(senderJid) ?? senderJid;
@@ -341,22 +361,52 @@ async function applyReplyGateway(args: {
 
   const senderKey = getReplyGatewaySenderKey(args.senderNumber);
   const existingMute = replyMuteStateBySender.get(senderKey);
-  if (existingMute) return { shouldReply: false };
-
-  const hasAttachment = args.attachments.length > 0;
-  const heuristic = decideReplyGatewayHeuristic(args.messageText, hasAttachment);
-  const decision = heuristic ?? (await decideReplyGatewayAi(args.messageText, hasAttachment));
-  if (!decision) return { shouldReply: true };
-
-  if (decision.action === 'mute') {
-    replyMuteStateBySender.set(senderKey, {
-      mutedAtIso: new Date().toISOString(),
-      reason: decision.reason,
+  if (existingMute) {
+    const normalized = normalizeGatewayText(args.messageText);
+    const previewMax = readPositiveIntEnv('REPLY_GATEWAY_LOG_PREVIEW_CHARS', 160);
+    logReplyGatewayDecision({
+      senderKey,
+      senderNumber: args.senderNumber,
+      action: 'no_reply',
+      reason: `muted:${existingMute.reason}`,
+      source: 'mute_state',
+      initialShouldReply: args.initialShouldReply,
+      hasAttachment: args.attachments.length > 0,
+      messageLen: normalized.length,
+      messagePreview: truncateText(normalized, previewMax),
     });
     return { shouldReply: false };
   }
 
-  return { shouldReply: decision.action === 'reply' };
+  const hasAttachment = args.attachments.length > 0;
+  const heuristic = decideReplyGatewayHeuristic(args.messageText, hasAttachment);
+  const decision = heuristic ?? (await decideReplyGatewayAi(args.messageText, hasAttachment));
+  const source: ReplyGatewayDecisionSource = heuristic ? 'heuristic' : decision ? 'ai' : 'default';
+  const finalDecision: ReplyGatewayDecision = decision ?? { action: 'reply', reason: 'default' };
+
+  const normalized = normalizeGatewayText(args.messageText);
+  const previewMax = readPositiveIntEnv('REPLY_GATEWAY_LOG_PREVIEW_CHARS', 160);
+  logReplyGatewayDecision({
+    senderKey,
+    senderNumber: args.senderNumber,
+    action: finalDecision.action,
+    reason: finalDecision.reason,
+    source,
+    initialShouldReply: args.initialShouldReply,
+    hasAttachment,
+    messageLen: normalized.length,
+    messagePreview: truncateText(normalized, previewMax),
+  });
+
+  if (finalDecision.action === 'mute') {
+    replyMuteStateBySender.set(senderKey, {
+      mutedAtIso: new Date().toISOString(),
+      reason: finalDecision.reason,
+    });
+    return { shouldReply: false };
+  }
+
+  return { shouldReply: finalDecision.action === 'reply' };
 }
 
 function extractPresenceItems(payloadUnknown: unknown): Array<{ remoteJid: string; participantJid: string; presence: string }> {

@@ -316,6 +316,10 @@
 - Impact:
   - Reduces unwanted auto-replies in private chats.
   - Improves n8n payload consistency for media attachments.
+
+## [2026-02-16 00:46:21 WITA] Log reply gateway decisions
+- Change:
+  - Added gateway decision logs so it's clear when replies are suppressed by the gateway.
   - Added `SERVICE_CATEGORY_AI_ENABLED=false` option to disable category AI.
 
 ## [2026-02-15 16:29:25 WITA] Standardize ticketing WhatsApp notifications
