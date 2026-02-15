@@ -383,3 +383,9 @@
 - Change:
   - Added legacy-compatible payload fields (`fromNumber`, `replyTo`, `messageType`, `mediaInfo`, `attachmentCount`).
   - Added mentioned JIDs extraction and forwarded into n8n payload.
+
+## [2026-02-15 20:08:46 WITA] Port legacy user recognition and log-only chaining
+- Change:
+  - Added LDAP phone-number lookup with pushName fallback and cached results.
+  - Forwarded `adUser` into n8n payload for identity-aware workflows.
+  - Enabled log-only mode for untagged group messages (`shouldReply=false`) while still sending to n8n.

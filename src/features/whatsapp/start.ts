@@ -76,6 +76,8 @@ type BufferedMessage = {
   pushName: string;
   isGroup: boolean;
   shouldReply: boolean;
+  messageType: ParsedIncomingMessage['messageType'];
+  mentionedJids: string[];
 };
 
 type MessageBuffer = {
@@ -222,6 +224,12 @@ async function flushMessageBuffer(key: string): Promise<void> {
     for (const att of item.attachments) combinedAttachments.push(att);
   }
 
+  const mentionedSet = new Set<string>();
+  for (const item of buffer.items) {
+    for (const jid of item.mentionedJids) mentionedSet.add(jid);
+  }
+  const combinedMentionedJids = Array.from(mentionedSet);
+
   const currentSock = sock;
   const deps = activeDeps;
   if (!currentSock || !deps) return;
@@ -232,8 +240,8 @@ async function flushMessageBuffer(key: string): Promise<void> {
     remoteJid: first.remoteJid,
     messageContent: combinedText || first.text,
     attachments: combinedAttachments,
-    messageType: undefined,
-    mentionedJids: undefined,
+    messageType: first.messageType,
+    mentionedJids: combinedMentionedJids,
     shouldReply: first.shouldReply,
     deps,
   });
@@ -1638,7 +1646,8 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
       } else {
         const isGroup = remoteJid.endsWith('@g.us');
         const shouldReply = !isGroup || isTaggedInGroup({ sock: currentSock, deps, msg, messageText: messageContent });
-        if (!shouldReply) continue;
+        const shouldLogOnly = !shouldReply && (!isGroup || process.env.LOG_UNTAGGED_GROUPS !== 'false');
+        if (!shouldReply && !shouldLogOnly) continue;
 
         const senderNumber = resolveSenderNumber({ msg, remoteJid, store: deps.store, authInfoDir: deps.authInfoDir });
         const pushName = msg.pushName ?? 'Unknown';
@@ -1651,6 +1660,8 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
           pushName,
           isGroup,
           shouldReply,
+          messageType: parsed.messageType,
+          mentionedJids: parsed.mentionedJids,
         });
 
         if (buffered) continue;
@@ -1663,6 +1674,7 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
           attachments: parsed.attachments,
           messageType: parsed.messageType,
           mentionedJids: parsed.mentionedJids,
+          shouldReply,
           deps,
         });
       }
