@@ -110,6 +110,19 @@ function requireEnv(name: string): string {
   return value;
 }
 
+function getOptionalEnv(name: string): string | undefined {
+  const value = process.env[name];
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function isServiceCategoryAiEnabled(): boolean {
+  const raw = getOptionalEnv('SERVICE_CATEGORY_AI_ENABLED');
+  if (!raw) return true;
+  return raw.toLowerCase() !== 'false';
+}
+
 function getServiceDeskUrls(): ServiceDeskUrls {
   const rawApiBase = requireEnv('SD_BASE_URL');
   const apiBaseUrl = rawApiBase.endsWith('/') ? rawApiBase.slice(0, -1) : rawApiBase;
@@ -418,7 +431,8 @@ export async function handleCreateTicket(args: CreateTicketArgs): Promise<string
 }
 
 function getOpenAiClient(): OpenAI {
-  const apiKey = requireEnv('OPENAI_API_KEY');
+  const apiKey = getOptionalEnv('OPENAI_API_KEY');
+  if (!apiKey) throw new Error('OPENAI_API_KEY must be set in environment');
   return new OpenAI({ apiKey });
 }
 
@@ -484,6 +498,9 @@ async function analyzeImageWithPrompt(base64Image: string, prompt: string): Prom
 }
 
 export async function defineServiceCategory(changeId: string): Promise<string | null> {
+  if (!isServiceCategoryAiEnabled()) return null;
+  if (!getOptionalEnv('OPENAI_API_KEY')) return null;
+
   const requestData = await viewRequest(changeId);
   if (!requestData) return null;
 
@@ -492,7 +509,15 @@ export async function defineServiceCategory(changeId: string): Promise<string | 
   if (!subject && !description) return null;
 
   const input = `Here is a list of service categories: ${serviceCategories.join(', ')}.\nBased on the following subject and description, select the most appropriate category:\n\nSubject: ${subject}\nDescription: ${description}, answer only with the service category`;
-  const aiResponse = await getAnswerAI(input);
+
+  let aiResponse = '';
+  try {
+    aiResponse = await getAnswerAI(input);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Service category AI skipped: ${message}`);
+    return null;
+  }
 
   for (const category of serviceCategories) {
     const suffix = category.split('. ')[1] ?? category;

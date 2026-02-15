@@ -303,3 +303,8 @@
 ## [2026-02-15 16:06:59 WITA] Fix ticket claim reactions handled as messages
 - Change:
   - Added support for ticket claim reactions arriving via `messages.upsert` reactionMessage.
+
+## [2026-02-15 16:21:07 WITA] Skip ServiceDesk category AI on OpenAI auth errors
+- Change:
+  - Service category AI suggestion no longer fails the webhook when OpenAI returns 401.
+  - Added `SERVICE_CATEGORY_AI_ENABLED=false` option to disable category AI.
