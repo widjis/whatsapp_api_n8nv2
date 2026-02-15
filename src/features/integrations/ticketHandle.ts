@@ -70,6 +70,7 @@ type UpdateRequestArgs = {
   isServiceTemplate?: boolean;
   serviceCategory?: string;
   status?: string;
+  groupName?: string | null;
   technicianName?: string | null;
   ictTechnician?: string;
   resolution?: string;
@@ -217,6 +218,7 @@ export async function updateRequest(changeId: string, args: UpdateRequestArgs = 
         name: string;
         id: string;
       };
+      group?: { name: string } | null;
       status?: { name: string };
       service_category?: { name: string };
       technician?: { name: string } | null;
@@ -240,6 +242,8 @@ export async function updateRequest(changeId: string, args: UpdateRequestArgs = 
 
   if (status) updateData.request.status = { name: status };
   if (serviceCategory) updateData.request.service_category = { name: serviceCategory };
+  if (args.groupName === null) updateData.request.group = null;
+  else if (typeof args.groupName === 'string' && args.groupName.trim().length > 0) updateData.request.group = { name: args.groupName };
   if (technicianName === null) updateData.request.technician = null;
   else if (technicianName) updateData.request.technician = { name: technicianName };
   if (ictTechnician) updateData.request.udf_fields = { udf_pick_601: ictTechnician };

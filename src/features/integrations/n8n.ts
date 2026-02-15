@@ -13,6 +13,10 @@ export type N8nAttachment = {
   height: number | null;
   ptt: boolean | null;
   dataBase64: string | null;
+  imageData?: string | null;
+  videoData?: string | null;
+  audioData?: string | null;
+  documentData?: string | null;
   error: string | null;
   isQuoted?: boolean;
   source?: 'direct' | 'quoted';

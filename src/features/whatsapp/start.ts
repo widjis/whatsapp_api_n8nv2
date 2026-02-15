@@ -37,7 +37,7 @@ import {
 } from '../integrations/technicianContacts.js';
 import type { TechnicianContact, TechnicianContactUpdateField } from '../integrations/technicianContacts.js';
 import { claimTicketNotification, loadTicketNotification, unclaimTicketNotification } from '../tickets/claimStore.js';
-import { assignTechnicianToRequest, updateRequest, viewRequest } from '../integrations/ticketHandle.js';
+import { updateRequest, viewRequest } from '../integrations/ticketHandle.js';
 
 let sock: WASocket | undefined;
 const mediaLogger = pino({ level: 'fatal' });
@@ -656,8 +656,12 @@ async function handleTicketReactionClaim(args: {
   const priorityName = requestObj?.priority?.name;
   const priority = typeof priorityName === 'string' && priorityName.trim().length > 0 ? priorityName : 'Low';
 
+  const groupName = determineServiceDeskGroupByRole(tech.technician);
+
   const updateRes = await updateRequest(ticketId, {
     ictTechnician: tech.ict_name,
+    groupName,
+    technicianName: tech.technician,
     status: 'In Progress',
     priority,
   });
@@ -668,28 +672,8 @@ async function handleTicketReactionClaim(args: {
         `*Ticket Claimed (Partial)*\n` +
         `Ticket ID: *${ticketId}*\n` +
         `Technician: *${tech.name}*\n` +
-        `Status update: Failed\n` +
+        `Update: Failed\n` +
         `Details: ${updateRes.message}`,
-    });
-    return;
-  }
-
-  const groupName = determineServiceDeskGroupByRole(tech.technician);
-  const assignRes = await assignTechnicianToRequest({
-    requestId: ticketId,
-    groupName,
-    technicianName: tech.technician,
-  });
-
-  if (!assignRes.success) {
-    await args.sock.sendMessage(args.remoteJid, {
-      text:
-        `*Ticket Claimed (Partial)*\n` +
-        `Ticket ID: *${ticketId}*\n` +
-        `Technician: *${tech.name}*\n` +
-        `Status: *In Progress*\n` +
-        `Assignment: Failed\n` +
-        `Details: ${assignRes.message}`,
     });
     return;
   }
@@ -752,15 +736,25 @@ async function handleTicketReactionUnclaim(args: {
   const priorityName = requestObj?.priority?.name;
   const priority = typeof priorityName === 'string' && priorityName.trim().length > 0 ? priorityName : 'Low';
 
-  const updateArgs: { status: string; priority: string; technicianName?: string | null; ictTechnician?: string } = {
-    status: 'Open',
-    priority,
-  };
+  const statusToRestore =
+    typeof stored.previousStatus === 'string' && stored.previousStatus.trim().length > 0 ? stored.previousStatus : 'Open';
+
+  const updateArgs: {
+    status: string;
+    priority: string;
+    technicianName?: string | null;
+    ictTechnician?: string;
+    groupName?: string | null;
+  } = { status: statusToRestore, priority };
 
   if (stored.previousTechnicianName !== undefined) {
     updateArgs.technicianName = stored.previousTechnicianName;
   } else {
     updateArgs.technicianName = null;
+  }
+
+  if (stored.previousGroupName !== undefined) {
+    updateArgs.groupName = stored.previousGroupName;
   }
 
   if (typeof stored.previousIctTechnician === 'string' && stored.previousIctTechnician.trim().length > 0) {
@@ -774,44 +768,21 @@ async function handleTicketReactionUnclaim(args: {
         `*Ticket Unclaimed (Partial)*\n` +
         `Ticket ID: *${ticketId}*\n` +
         `Removed by: *${stored.claimedByName ?? stored.claimedByPhone ?? reacterPhone}*\n` +
-        `Revert status: Failed\n` +
+        `Revert: Failed\n` +
         `Details: ${updateRes.message}`,
     });
     return;
   }
 
-  let assignmentLabel = 'Cleared';
-  if (
-    typeof stored.previousGroupName === 'string' &&
-    stored.previousGroupName.trim().length > 0 &&
-    typeof stored.previousTechnicianName === 'string' &&
-    stored.previousTechnicianName.trim().length > 0
-  ) {
-    const assignRes = await assignTechnicianToRequest({
-      requestId: ticketId,
-      groupName: stored.previousGroupName,
-      technicianName: stored.previousTechnicianName,
-    });
-    if (!assignRes.success) {
-      await args.sock.sendMessage(args.remoteJid, {
-        text:
-          `*Ticket Unclaimed (Partial)*\n` +
-          `Ticket ID: *${ticketId}*\n` +
-          `Removed by: *${stored.claimedByName ?? stored.claimedByPhone ?? reacterPhone}*\n` +
-          `Status: *Open*\n` +
-          `Restore assignment: Failed\n` +
-          `Details: ${assignRes.message}`,
-      });
-      return;
-    }
-    assignmentLabel = 'Restored';
-  } else if (stored.previousTechnicianName !== undefined) {
-    assignmentLabel = 'Restored';
-  }
+  const assignmentLabel =
+    (typeof stored.previousTechnicianName === 'string' && stored.previousTechnicianName.trim().length > 0) ||
+    (typeof stored.previousGroupName === 'string' && stored.previousGroupName.trim().length > 0)
+      ? 'Restored'
+      : 'Cleared';
 
   const by = stored.claimedByName ?? stored.claimedByPhone ?? reacterPhone;
   await args.sock.sendMessage(args.remoteJid, {
-    text: `*Ticket Unclaimed*\nTicket ID: *${ticketId}*\nRemoved by: *${by}*\nStatus: *Open*\nAssignment: ${assignmentLabel}`,
+    text: `*Ticket Unclaimed*\nTicket ID: *${ticketId}*\nRemoved by: *${by}*\nStatus: *${statusToRestore}*\nAssignment: ${assignmentLabel}`,
   });
 }
 
@@ -968,6 +939,7 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
         height: Number(actualQuoted.imageMessage.height ?? 0) || null,
         ptt: null,
         dataBase64,
+        imageData: dataBase64,
         error: dataBase64 ? null : 'Failed to download quoted image',
       };
     } else if (actualQuoted.videoMessage) {
@@ -980,11 +952,12 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
         mimetype: actualQuoted.videoMessage.mimetype ?? 'video/mp4',
         fileLength: Number(actualQuoted.videoMessage.fileLength ?? 0),
         fileName: null,
-        seconds: Number(actualQuoted.videoMessage.seconds ?? 0) || null,
+        seconds: Number(actualQuoted.videoMessage.seconds ?? 0) || 0,
         width: Number(actualQuoted.videoMessage.width ?? 0) || null,
         height: Number(actualQuoted.videoMessage.height ?? 0) || null,
         ptt: null,
         dataBase64,
+        videoData: dataBase64,
         error: dataBase64 ? null : 'Failed to download quoted video',
       };
     } else if (actualQuoted.audioMessage) {
@@ -997,11 +970,12 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
         mimetype: actualQuoted.audioMessage.mimetype ?? 'audio/ogg',
         fileLength: Number(actualQuoted.audioMessage.fileLength ?? 0),
         fileName: null,
-        seconds: Number(actualQuoted.audioMessage.seconds ?? 0) || null,
+        seconds: Number(actualQuoted.audioMessage.seconds ?? 0) || 0,
         width: null,
         height: null,
         ptt: Boolean(actualQuoted.audioMessage.ptt),
         dataBase64,
+        audioData: dataBase64,
         error: dataBase64 ? null : 'Failed to download quoted audio',
       };
     } else if (actualQuoted.documentMessage) {
@@ -1087,6 +1061,7 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       height: Number(rawMessage.imageMessage.height ?? 0) || null,
       ptt: null,
       dataBase64,
+      imageData: dataBase64,
       error: dataBase64 ? null : 'Failed to download image',
     };
     return { text: caption || 'Image message received', attachments: [attachment], messageType: 'image', mentionedJids, quotedMessage };
@@ -1101,11 +1076,12 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       mimetype: rawMessage.videoMessage.mimetype ?? 'video/mp4',
       fileLength: Number(rawMessage.videoMessage.fileLength ?? 0),
       fileName: null,
-      seconds: Number(rawMessage.videoMessage.seconds ?? 0) || null,
+      seconds: Number(rawMessage.videoMessage.seconds ?? 0) || 0,
       width: Number(rawMessage.videoMessage.width ?? 0) || null,
       height: Number(rawMessage.videoMessage.height ?? 0) || null,
       ptt: null,
       dataBase64,
+      videoData: dataBase64,
       error: dataBase64 ? null : 'Failed to download video',
     };
     return { text: caption || 'Video message received', attachments: [attachment], messageType: 'video', mentionedJids, quotedMessage };
@@ -1120,11 +1096,12 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       mimetype: rawMessage.audioMessage.mimetype ?? 'audio/ogg',
       fileLength: Number(rawMessage.audioMessage.fileLength ?? 0),
       fileName: null,
-      seconds: Number(rawMessage.audioMessage.seconds ?? 0) || null,
+      seconds: Number(rawMessage.audioMessage.seconds ?? 0) || 0,
       width: null,
       height: null,
       ptt: isPtt,
       dataBase64,
+      audioData: dataBase64,
       error: dataBase64 ? null : 'Failed to download audio',
     };
     return {
@@ -1150,6 +1127,7 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
       height: null,
       ptt: null,
       dataBase64,
+      documentData: dataBase64,
       error: dataBase64 ? null : 'Failed to download document',
     };
     const fallbackText = attachment.fileName ? `Document: ${attachment.fileName}` : 'Document message received';
@@ -1747,35 +1725,6 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
       const remoteJid = msg.key?.remoteJid;
       if (!remoteJid) continue;
       if (remoteJid === 'status@broadcast') continue;
-
-      if (allowedReactionGroups.size > 0) {
-        const reactionTarget = extractReactionTargetFromMessage(msg.message);
-        if (reactionTarget?.messageId && reactionTarget.text !== undefined) {
-          if (allowedReactionGroups.has(remoteJid)) {
-            const participantRaw = pickReactionSenderFromUpsertMessage({ msg, currentSock, deps });
-            if (participantRaw) {
-              if (isReactionRemoved(reactionTarget.text)) {
-                await handleTicketReactionUnclaim({
-                  sock: currentSock,
-                  deps,
-                  remoteJid,
-                  messageId: reactionTarget.messageId,
-                  participantRaw,
-                });
-              } else {
-                await handleTicketReactionClaim({
-                  sock: currentSock,
-                  deps,
-                  remoteJid,
-                  messageId: reactionTarget.messageId,
-                  participantRaw,
-                });
-              }
-              continue;
-            }
-          }
-        }
-      }
 
       const parsed = await parseIncomingMessage({ sock: currentSock, msg });
       const messageContent = parsed.text;

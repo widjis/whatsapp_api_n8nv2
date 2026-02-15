@@ -394,3 +394,14 @@
 - Change:
   - Added quoted message extraction from `contextInfo` and forwarded as `quotedMessage` to n8n.
   - Added quoted media download (image/video/audio) and media fallback when no direct attachment.
+
+## [2026-02-15 20:50:55 WITA] Match legacy attachment data keys for media payloads
+- Change:
+  - Added legacy-compatible base64 keys (`imageData`, `videoData`, `audioData`, `documentData`) alongside existing attachment fields.
+  - Ensured quoted and direct media payloads fill the correct per-type keys.
+
+## [2026-02-15 20:58:54 WITA] Fix duplicate claim flows and double ServiceDesk updates
+- Change:
+  - Reaction claim/unclaim now handled only via `messages.reaction` to prevent duplicate processing.
+  - Claim/unclaim now uses a single ServiceDesk update call including group/technician/status fields.
+  - Unclaim restores the ticket to its previous status when available.
