@@ -10,4 +10,4 @@ services:
       - "8192:8192"
     volumes:
       - ./data:/app/data
-    restart: unless-stopped
+    restart: always

@@ -437,3 +437,9 @@
 - Change:
   - Ack-phase message now includes explicit instruction that video is still being analyzed.
   - Prevents the first reply from treating the caption as a normal question.
+
+## [2026-02-15 23:27:33 WITA] Prevent Baileys group lookup rate-limit crashes
+- Change:
+  - Added group lookup caching and backoff for `/send-group-message` when resolving groups by name.
+  - Rate-overlimit now returns HTTP 429 instead of crashing the Node process.
+  - Other group lookup failures now return HTTP 503/422 with a clear message.
