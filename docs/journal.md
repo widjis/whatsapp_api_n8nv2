@@ -313,3 +313,12 @@
 - Change:
   - Reformatted ServiceDesk Plus webhook notifications using consistent English labels and spacing.
   - Reformatted ticket claim reaction replies with consistent labels and outcomes.
+
+## [2026-02-15 16:36:06 WITA] Improve ticket claim storage error visibility
+- Change:
+  - Ticket claim failures now include the underlying Redis error message when available.
+
+## [2026-02-15 16:44:42 WITA] Stabilize ticket claim Redis and reaction sender detection
+- Change:
+  - Prevented Redis "already connecting/connected" errors by serializing connect attempts.
+  - Improved reaction sender extraction to avoid mis-identifying the claimant number.

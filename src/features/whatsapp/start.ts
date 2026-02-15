@@ -371,7 +371,7 @@ async function handleTicketReactionClaim(args: {
         ? 'Ticket notification was not found.'
         : claim.reason === 'invalid_record'
           ? 'Ticket notification record is invalid.'
-          : 'Ticket notification storage error.';
+          : claim.detail ?? 'Ticket notification storage error.';
     await args.sock.sendMessage(args.remoteJid, { text: renderClaimFailed(reason) });
     return;
   }
@@ -457,6 +457,26 @@ function resolveParticipantJid(args: { participant: string; store: InMemoryStore
 function extractPhoneDigitsFromJid(jid: string): string | null {
   const match = jid.match(/(\d+)@s\.whatsapp\.net/);
   return match?.[1] ?? null;
+}
+
+function pickReactionSenderFromUpsertMessage(msg: proto.IWebMessageInfo, currentSock: WASocket): string | null {
+  const viaKey = typeof msg.key?.participant === 'string' && msg.key.participant ? msg.key.participant : undefined;
+  const viaTopLevel =
+    typeof (msg as unknown as { participant?: unknown }).participant === 'string'
+      ? ((msg as unknown as { participant?: string }).participant ?? undefined)
+      : undefined;
+
+  const sockUserJid = currentSock.user?.id;
+  const sockDigits = typeof sockUserJid === 'string' ? extractPhoneDigitsFromJid(sockUserJid) : null;
+
+  const candidates = [viaTopLevel, viaKey].filter((v): v is string => typeof v === 'string' && v.length > 0);
+  for (const candidate of candidates) {
+    const digits = extractPhoneDigitsFromJid(candidate);
+    if (sockDigits && digits && digits === sockDigits) continue;
+    return candidate;
+  }
+
+  return candidates[0] ?? null;
 }
 
 function determineServiceDeskGroupByRole(role: string): string {
@@ -965,8 +985,8 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
         const reactionTarget = extractReactionTargetFromMessage(msg.message);
         if (reactionTarget?.messageId) {
           if (allowedReactionGroups.has(remoteJid)) {
-            const participantRaw = msg.key?.participant;
-            if (typeof participantRaw === 'string' && participantRaw) {
+            const participantRaw = pickReactionSenderFromUpsertMessage(msg, currentSock);
+            if (participantRaw) {
               await handleTicketReactionClaim({
                 sock: currentSock,
                 deps,

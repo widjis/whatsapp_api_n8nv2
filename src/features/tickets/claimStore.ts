@@ -14,10 +14,11 @@ export type TicketClaimRecord = {
 type ClaimResult =
   | { ok: true; record: TicketClaimRecord; wasClaimed: false }
   | { ok: true; record: TicketClaimRecord; wasClaimed: true }
-  | { ok: false; reason: 'not_found' | 'invalid_record' | 'storage_error' };
+  | { ok: false; reason: 'not_found' | 'invalid_record' | 'storage_error'; detail?: string };
 
 const inMemoryRecords = new Map<string, TicketClaimRecord>();
 const inMemoryLocks = new Map<string, string>();
+const redisConnectPromises = new WeakMap<IORedis, Promise<void>>();
 
 let redisClient: IORedis | null | undefined;
 
@@ -42,6 +43,36 @@ function getRedisClient(): IORedis | null {
   });
   redisClient = client;
   return client;
+}
+
+function formatErrorDetail(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+async function ensureRedisConnected(redis: IORedis): Promise<void> {
+  if (redis.status === 'ready') return;
+
+  const existing = redisConnectPromises.get(redis);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const connectPromise = (async () => {
+    try {
+      await redis.connect();
+    } catch (error) {
+      const message = formatErrorDetail(error);
+      if (message.toLowerCase().includes('already connecting/connected')) return;
+      throw error;
+    } finally {
+      redisConnectPromises.delete(redis);
+    }
+  })();
+
+  redisConnectPromises.set(redis, connectPromise);
+  await connectPromise;
 }
 
 function recordKey(remoteJid: string, messageId: string): string {
@@ -95,10 +126,13 @@ export async function storeTicketNotification(args: {
   if (!redis) return;
 
   try {
-    await redis.connect();
+    await ensureRedisConnected(redis);
     await redis.set(key, JSON.stringify(record));
     await redis.del(lockKey(args.remoteJid, args.messageId));
-  } catch {
+  } catch (error) {
+    const host = process.env.REDIS_HOST ?? 'unknown';
+    const port = process.env.REDIS_PORT ?? 'unknown';
+    console.error(`Failed to persist ticket claim record to Redis (${host}:${port}): ${formatErrorDetail(error)}`);
     return;
   }
 }
@@ -112,12 +146,15 @@ export async function loadTicketNotification(args: {
   if (!redis) return inMemoryRecords.get(key) ?? null;
 
   try {
-    await redis.connect();
+    await ensureRedisConnected(redis);
     const raw = await redis.get(key);
     const parsed = parseRecord(raw);
     if (parsed) return parsed;
     return inMemoryRecords.get(key) ?? null;
-  } catch {
+  } catch (error) {
+    const host = process.env.REDIS_HOST ?? 'unknown';
+    const port = process.env.REDIS_PORT ?? 'unknown';
+    console.error(`Failed to load ticket claim record from Redis (${host}:${port}): ${formatErrorDetail(error)}`);
     return inMemoryRecords.get(key) ?? null;
   }
 }
@@ -136,13 +173,17 @@ export async function claimTicketNotification(args: {
     const redis = getRedisClient();
     if (!redis) return { ok: false, reason: 'not_found' };
     try {
-      await redis.connect();
+      await ensureRedisConnected(redis);
       const raw = await redis.get(key);
       const parsed = parseRecord(raw);
       if (!parsed) return { ok: false, reason: raw ? 'invalid_record' : 'not_found' };
       inMemoryRecords.set(key, parsed);
-    } catch {
-      return { ok: false, reason: 'storage_error' };
+    } catch (error) {
+      const host = process.env.REDIS_HOST ?? 'unknown';
+      const port = process.env.REDIS_PORT ?? 'unknown';
+      const detail = `Redis read failed (${host}:${port}): ${formatErrorDetail(error)}`;
+      console.error(detail);
+      return { ok: false, reason: 'storage_error', detail };
     }
   }
 
@@ -170,7 +211,7 @@ export async function claimTicketNotification(args: {
   }
 
   try {
-    await redis.connect();
+    await ensureRedisConnected(redis);
     const lockSet = await redis.set(lock, args.claimantPhone, 'EX', 60 * 60 * 24, 'NX');
     if (lockSet !== 'OK') {
       const current = await loadTicketNotification({ remoteJid: args.remoteJid, messageId: args.messageId });
@@ -192,7 +233,11 @@ export async function claimTicketNotification(args: {
     await redis.set(key, JSON.stringify(updated));
     inMemoryRecords.set(key, updated);
     return { ok: true, record: updated, wasClaimed: false };
-  } catch {
-    return { ok: false, reason: 'storage_error' };
+  } catch (error) {
+    const host = process.env.REDIS_HOST ?? 'unknown';
+    const port = process.env.REDIS_PORT ?? 'unknown';
+    const detail = `Redis write failed (${host}:${port}): ${formatErrorDetail(error)}`;
+    console.error(detail);
+    return { ok: false, reason: 'storage_error', detail };
   }
 }
