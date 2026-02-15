@@ -70,7 +70,7 @@ type UpdateRequestArgs = {
   isServiceTemplate?: boolean;
   serviceCategory?: string;
   status?: string;
-  technicianName?: string;
+  technicianName?: string | null;
   ictTechnician?: string;
   resolution?: string;
   priority?: string;
@@ -219,7 +219,7 @@ export async function updateRequest(changeId: string, args: UpdateRequestArgs = 
       };
       status?: { name: string };
       service_category?: { name: string };
-      technician?: { name: string };
+      technician?: { name: string } | null;
       udf_fields?: { udf_pick_601: string };
       priority: { name: string };
     };
@@ -240,7 +240,8 @@ export async function updateRequest(changeId: string, args: UpdateRequestArgs = 
 
   if (status) updateData.request.status = { name: status };
   if (serviceCategory) updateData.request.service_category = { name: serviceCategory };
-  if (technicianName) updateData.request.technician = { name: technicianName };
+  if (technicianName === null) updateData.request.technician = null;
+  else if (technicianName) updateData.request.technician = { name: technicianName };
   if (ictTechnician) updateData.request.udf_fields = { udf_pick_601: ictTechnician };
 
   const data = `input_data=${encodeURIComponent(JSON.stringify(updateData))}`;

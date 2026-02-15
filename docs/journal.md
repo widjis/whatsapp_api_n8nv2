@@ -347,3 +347,7 @@
 ## [2026-02-15 17:26:08 WITA] Support unclaim when reaction removed
 - Change:
   - Removing a claim reaction now clears the stored claim when removed by the original claimer.
+
+## [2026-02-15 17:37:52 WITA] Revert ServiceDesk status and assignment on unclaim
+- Change:
+  - Ticket unclaim now reverts ServiceDesk status to Open and restores previous assignment when available.

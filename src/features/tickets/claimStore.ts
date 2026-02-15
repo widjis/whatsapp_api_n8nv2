@@ -6,6 +6,10 @@ export type TicketClaimRecord = {
   messageId: string;
   createdAtIso: string;
   claimed: boolean;
+  previousStatus?: string | null;
+  previousIctTechnician?: string | null;
+  previousTechnicianName?: string | null;
+  previousGroupName?: string | null;
   claimedAtIso?: string;
   claimedByPhone?: string;
   claimedByName?: string;
@@ -103,12 +107,36 @@ function parseRecord(raw: string | null): TicketClaimRecord | null {
     const messageId = typeof r.messageId === 'string' ? r.messageId : '';
     const createdAtIso = typeof r.createdAtIso === 'string' ? r.createdAtIso : '';
     const claimed = typeof r.claimed === 'boolean' ? r.claimed : false;
+    const previousStatus = typeof r.previousStatus === 'string' ? r.previousStatus : r.previousStatus === null ? null : undefined;
+    const previousIctTechnician =
+      typeof r.previousIctTechnician === 'string' ? r.previousIctTechnician : r.previousIctTechnician === null ? null : undefined;
+    const previousTechnicianName =
+      typeof r.previousTechnicianName === 'string'
+        ? r.previousTechnicianName
+        : r.previousTechnicianName === null
+          ? null
+          : undefined;
+    const previousGroupName =
+      typeof r.previousGroupName === 'string' ? r.previousGroupName : r.previousGroupName === null ? null : undefined;
     const claimedAtIso = typeof r.claimedAtIso === 'string' ? r.claimedAtIso : undefined;
     const claimedByPhone = typeof r.claimedByPhone === 'string' ? r.claimedByPhone : undefined;
     const claimedByName = typeof r.claimedByName === 'string' ? r.claimedByName : undefined;
 
     if (!ticketId || !remoteJid || !messageId || !createdAtIso) return null;
-    return { ticketId, remoteJid, messageId, createdAtIso, claimed, claimedAtIso, claimedByPhone, claimedByName };
+    return {
+      ticketId,
+      remoteJid,
+      messageId,
+      createdAtIso,
+      claimed,
+      previousStatus,
+      previousIctTechnician,
+      previousTechnicianName,
+      previousGroupName,
+      claimedAtIso,
+      claimedByPhone,
+      claimedByName,
+    };
   } catch {
     return null;
   }
@@ -173,6 +201,12 @@ export async function claimTicketNotification(args: {
   messageId: string;
   claimantPhone: string;
   claimantName: string;
+  previous?: {
+    status?: string | null;
+    ictTechnician?: string | null;
+    technicianName?: string | null;
+    groupName?: string | null;
+  };
 }): Promise<ClaimResult> {
   const key = recordKey(args.remoteJid, args.messageId);
   const lock = lockKey(args.remoteJid, args.messageId);
@@ -211,6 +245,10 @@ export async function claimTicketNotification(args: {
     const updated: TicketClaimRecord = {
       ...fromMem,
       claimed: true,
+      previousStatus: args.previous?.status ?? fromMem.previousStatus,
+      previousIctTechnician: args.previous?.ictTechnician ?? fromMem.previousIctTechnician,
+      previousTechnicianName: args.previous?.technicianName ?? fromMem.previousTechnicianName,
+      previousGroupName: args.previous?.groupName ?? fromMem.previousGroupName,
       claimedAtIso: new Date().toISOString(),
       claimedByPhone: args.claimantPhone,
       claimedByName: args.claimantName,
@@ -234,6 +272,10 @@ export async function claimTicketNotification(args: {
     const updated: TicketClaimRecord = {
       ...current,
       claimed: true,
+      previousStatus: args.previous?.status ?? current.previousStatus,
+      previousIctTechnician: args.previous?.ictTechnician ?? current.previousIctTechnician,
+      previousTechnicianName: args.previous?.technicianName ?? current.previousTechnicianName,
+      previousGroupName: args.previous?.groupName ?? current.previousGroupName,
       claimedAtIso: new Date().toISOString(),
       claimedByPhone: args.claimantPhone,
       claimedByName: args.claimantName,

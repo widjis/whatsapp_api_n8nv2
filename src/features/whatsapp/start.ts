@@ -375,11 +375,30 @@ async function handleTicketReactionClaim(args: {
     return;
   }
 
+  if (stored.claimed) {
+    const by = stored.claimedByName ?? stored.claimedByPhone ?? 'another technician';
+    await args.sock.sendMessage(args.remoteJid, { text: renderAlreadyClaimed(by) });
+    return;
+  }
+
+  const requestObj = await viewRequest(ticketId);
+  const previousStatus = requestObj?.status?.name ?? null;
+  const previousIctTechnician = requestObj?.udf_fields?.udf_pick_601 ?? null;
+  const previousTechnicianName = requestObj?.technician?.name ?? null;
+  const previousGroupNameUnknown: unknown = (requestObj as unknown as { group?: { name?: unknown } }).group?.name;
+  const previousGroupName = typeof previousGroupNameUnknown === 'string' ? previousGroupNameUnknown : null;
+
   const claim = await claimTicketNotification({
     remoteJid: args.remoteJid,
     messageId: args.messageId,
     claimantPhone: reacterPhone,
     claimantName: tech.name,
+    previous: {
+      status: previousStatus,
+      ictTechnician: previousIctTechnician,
+      technicianName: previousTechnicianName,
+      groupName: previousGroupName,
+    },
   });
 
   if (!claim.ok) {
@@ -399,7 +418,6 @@ async function handleTicketReactionClaim(args: {
     return;
   }
 
-  const requestObj = await viewRequest(ticketId);
   const priorityName = requestObj?.priority?.name;
   const priority = typeof priorityName === 'string' && priorityName.trim().length > 0 ? priorityName : 'Low';
 
@@ -482,9 +500,70 @@ async function handleTicketReactionUnclaim(args: {
   if (!result.ok) return;
   if (!result.wasUnclaimed) return;
 
+  const requestObj = await viewRequest(ticketId);
+  const priorityName = requestObj?.priority?.name;
+  const priority = typeof priorityName === 'string' && priorityName.trim().length > 0 ? priorityName : 'Low';
+
+  const updateArgs: { status: string; priority: string; technicianName?: string | null; ictTechnician?: string } = {
+    status: 'Open',
+    priority,
+  };
+
+  if (stored.previousTechnicianName !== undefined) {
+    updateArgs.technicianName = stored.previousTechnicianName;
+  } else {
+    updateArgs.technicianName = null;
+  }
+
+  if (typeof stored.previousIctTechnician === 'string' && stored.previousIctTechnician.trim().length > 0) {
+    updateArgs.ictTechnician = stored.previousIctTechnician;
+  }
+
+  const updateRes = await updateRequest(ticketId, updateArgs);
+  if (!updateRes.success) {
+    await args.sock.sendMessage(args.remoteJid, {
+      text:
+        `*Ticket Unclaimed (Partial)*\n` +
+        `Ticket ID: *${ticketId}*\n` +
+        `Removed by: *${stored.claimedByName ?? stored.claimedByPhone ?? reacterPhone}*\n` +
+        `Revert status: Failed\n` +
+        `Details: ${updateRes.message}`,
+    });
+    return;
+  }
+
+  let assignmentLabel = 'Cleared';
+  if (
+    typeof stored.previousGroupName === 'string' &&
+    stored.previousGroupName.trim().length > 0 &&
+    typeof stored.previousTechnicianName === 'string' &&
+    stored.previousTechnicianName.trim().length > 0
+  ) {
+    const assignRes = await assignTechnicianToRequest({
+      requestId: ticketId,
+      groupName: stored.previousGroupName,
+      technicianName: stored.previousTechnicianName,
+    });
+    if (!assignRes.success) {
+      await args.sock.sendMessage(args.remoteJid, {
+        text:
+          `*Ticket Unclaimed (Partial)*\n` +
+          `Ticket ID: *${ticketId}*\n` +
+          `Removed by: *${stored.claimedByName ?? stored.claimedByPhone ?? reacterPhone}*\n` +
+          `Status: *Open*\n` +
+          `Restore assignment: Failed\n` +
+          `Details: ${assignRes.message}`,
+      });
+      return;
+    }
+    assignmentLabel = 'Restored';
+  } else if (stored.previousTechnicianName !== undefined) {
+    assignmentLabel = 'Restored';
+  }
+
   const by = stored.claimedByName ?? stored.claimedByPhone ?? reacterPhone;
   await args.sock.sendMessage(args.remoteJid, {
-    text: `*Ticket Unclaimed*\nTicket ID: *${ticketId}*\nRemoved by: *${by}*`,
+    text: `*Ticket Unclaimed*\nTicket ID: *${ticketId}*\nRemoved by: *${by}*\nStatus: *Open*\nAssignment: ${assignmentLabel}`,
   });
 }
 
@@ -1062,7 +1141,7 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
 
       if (allowedReactionGroups.size > 0) {
         const reactionTarget = extractReactionTargetFromMessage(msg.message);
-        if (reactionTarget?.messageId) {
+        if (reactionTarget?.messageId && reactionTarget.text !== undefined) {
           if (allowedReactionGroups.has(remoteJid)) {
             const participantRaw = pickReactionSenderFromUpsertMessage({ msg, currentSock, deps });
             if (participantRaw) {
@@ -1138,6 +1217,7 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
 
       const reactionText =
         typeof item.reaction?.text === 'string' ? item.reaction.text : item.reaction?.text === null ? null : undefined;
+      if (reactionText === undefined) continue;
 
       const participantJid = resolveParticipantJid({
         participant: participantRaw,
