@@ -59,6 +59,7 @@ type WebhookBody = {
   status: 'new' | 'updated';
   receiver: string;
   receiver_type: string;
+  notify_requester_new?: string;
   notify_requester_update?: string;
   notify_requester_assign?: string;
   notify_technician?: string;
@@ -145,6 +146,11 @@ function isWebhookBody(input: unknown): input is WebhookBody {
 }
 
 function shouldNotify(raw: string | undefined): boolean {
+  return raw === 'true';
+}
+
+function shouldNotifyWebhook(raw: string | undefined, defaultValue: boolean): boolean {
+  if (!raw) return defaultValue;
   return raw === 'true';
 }
 
@@ -700,7 +706,8 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
           await storeTicketNotification({ ticketId: requestObj.id, remoteJid, messageId });
         }
 
-        if (requesterJid) {
+        const notifyRequesterNew = shouldNotifyWebhook(payload.notify_requester_new, true);
+        if (requesterJid && notifyRequesterNew) {
           const msgRequester = renderRequesterTicketCreatedMessage({
             requesterLabel: createdBy,
             ticketId: requestObj.id,

@@ -166,6 +166,27 @@ curl -X POST http://localhost:8192/send-bulk-message \
   -d '{"message":"Promo!","numbers":["085700000001","085700000002"],"minDelay":1000,"maxDelay":3000}'
 ```
 
+### POST /webhook (ServiceDesk Plus)
+- Receives ServiceDesk Plus ticket events and sends WhatsApp notifications.
+
+Body (JSON):
+```
+{
+  "id": "5733",
+  "status": "new",
+  "receiver": "120363215673098371@g.us",
+  "receiver_type": "group",
+  "notify_requester_new": "false",
+  "notify_requester_update": "false",
+  "notify_requester_assign": "true",
+  "notify_technician": "true"
+}
+```
+
+Notes:
+- `notify_requester_new` applies only when `status` is `new`.
+- If `notify_requester_new` is omitted, it defaults to `true`.
+
 ## Inbound Messages
 - All inbound messages are parsed and routed:
   - Messages starting with `/` are treated as commands.

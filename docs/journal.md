@@ -322,3 +322,15 @@
 - Change:
   - Prevented Redis "already connecting/connected" errors by serializing connect attempts.
   - Improved reaction sender extraction to avoid mis-identifying the claimant number.
+
+## [2026-02-15 16:54:18 WITA] Add toggle to disable requester notification on new tickets
+- Change:
+  - Added `NOTIFY_REQUESTER_NEW_TICKET=false` to skip requester WhatsApp message for new tickets.
+
+## [2026-02-15 17:02:41 WITA] Add webhook control for requester notification on new tickets
+- Change:
+  - Added `notify_requester_new` field to `/webhook` payload to enable/disable requester notification per request.
+
+## [2026-02-15 17:05:05 WITA] Remove env toggle for requester notification on new tickets
+- Change:
+  - Removed `NOTIFY_REQUESTER_NEW_TICKET` support; use `notify_requester_new` in webhook payload.
