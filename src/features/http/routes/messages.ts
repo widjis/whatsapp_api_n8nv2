@@ -166,6 +166,130 @@ function buildTicketLink(ticketId: string): string {
   return `${base}/WorkOrder.do?woMode=viewWO&woID=${encodeURIComponent(ticketId)}`;
 }
 
+function renderKeyValueLines(rows: Array<{ label: string; value: string }>): string {
+  return rows.map((r) => `${r.label}: ${r.value}`).join('\n');
+}
+
+function renderTicketNewMessage(args: {
+  requesterLabel: string;
+  createdDate: string;
+  ticketId: string;
+  category: string;
+  priority: string;
+  status: string;
+  subject: string;
+  description: string;
+  link: string;
+}): string {
+  const header = `*New request from ${args.requesterLabel} on ${args.createdDate}*`;
+  const details = renderKeyValueLines([
+    { label: 'Ticket ID', value: args.ticketId },
+    { label: 'Status', value: args.status },
+    { label: 'Priority', value: args.priority },
+    { label: 'Category', value: args.category },
+    { label: 'Subject', value: args.subject },
+    { label: 'Description', value: args.description },
+    { label: 'Link', value: args.link },
+  ]);
+  return `${header}\n\n${details}`;
+}
+
+function renderTicketUpdateMessage(args: {
+  ticketId: string;
+  requesterLabel: string;
+  category: string;
+  priority: string;
+  status: string;
+  subject: string;
+  link: string;
+  changes: string[];
+}): string {
+  const header = '*Ticket Updated*';
+  const base = renderKeyValueLines([
+    { label: 'Ticket ID', value: args.ticketId },
+    { label: 'Requester', value: args.requesterLabel },
+    { label: 'Status', value: args.status },
+    { label: 'Priority', value: args.priority },
+    { label: 'Category', value: args.category },
+    { label: 'Subject', value: args.subject },
+  ]);
+  const changeLines = args.changes.length > 0 ? `\n\nChanges:\n${args.changes.map((c) => `- ${c}`).join('\n')}` : '';
+  return `${header}\n\n${base}${changeLines}\n\nLink: ${args.link}`;
+}
+
+function renderTicketAssignedToTechnicianMessage(args: {
+  ticketId: string;
+  requesterLabel: string;
+  category: string;
+  priority: string;
+  status: string;
+  subject: string;
+  description: string;
+  link: string;
+}): string {
+  const header = '*Ticket assigned to you*';
+  const details = renderKeyValueLines([
+    { label: 'Ticket ID', value: args.ticketId },
+    { label: 'Requester', value: args.requesterLabel },
+    { label: 'Status', value: args.status },
+    { label: 'Priority', value: args.priority },
+    { label: 'Category', value: args.category },
+    { label: 'Subject', value: args.subject },
+    { label: 'Description', value: args.description },
+    { label: 'Link', value: args.link },
+  ]);
+  return `${header}\n\n${details}`;
+}
+
+function renderRequesterTicketCreatedMessage(args: {
+  requesterLabel: string;
+  ticketId: string;
+  status: string;
+  priority: string;
+  category: string;
+  subject: string;
+  description: string;
+  link: string;
+}): string {
+  const header = `Dear *${args.requesterLabel}*,`;
+  const intro = `Your request has been created successfully.`;
+  const details = renderKeyValueLines([
+    { label: 'Ticket ID', value: args.ticketId },
+    { label: 'Status', value: args.status },
+    { label: 'Priority', value: args.priority },
+    { label: 'Category', value: args.category },
+    { label: 'Subject', value: args.subject },
+    { label: 'Description', value: args.description },
+    { label: 'Link', value: args.link },
+  ]);
+  return `${header}\n\n${intro}\n\n${details}\n\nThank you.`;
+}
+
+function renderRequesterTicketUpdatedMessage(args: {
+  requesterLabel: string;
+  ticketId: string;
+  link: string;
+  changes: string[];
+}): string {
+  const header = `Dear *${args.requesterLabel}*,`;
+  const intro = `Your ticket has been updated.`;
+  const details = renderKeyValueLines([{ label: 'Ticket ID', value: args.ticketId }]);
+  const changeLines = args.changes.length > 0 ? `\n\nChanges:\n${args.changes.map((c) => `- ${c}`).join('\n')}` : '';
+  return `${header}\n\n${intro}\n\n${details}${changeLines}\n\nLink: ${args.link}`;
+}
+
+function renderRequesterTicketAssignedMessage(args: {
+  requesterLabel: string;
+  ticketId: string;
+  assigneeName: string;
+  link: string;
+}): string {
+  const header = `Dear *${args.requesterLabel}*,`;
+  const intro = `Your ticket has been assigned to *${args.assigneeName}*.`;
+  const details = renderKeyValueLines([{ label: 'Ticket ID', value: args.ticketId }]);
+  return `${header}\n\n${intro}\n\n${details}\n\nLink: ${args.link}`;
+}
+
 async function truncateDescription(args: { text: string; maxChars: number }): Promise<string> {
   const { text, maxChars } = args;
   if (text.length <= maxChars) return text;
@@ -556,13 +680,17 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       const requesterJid = requesterMobile ? phoneNumberFormatter(requesterMobile) : null;
 
       if (payload.status === 'new') {
-        const msgReceiver =
-          `*New request from ${createdBy} on ${createdDate}!*\n` +
-          `Ticket ID: ${requestObj.id}\n` +
-          `Category: ${category}\n` +
-          `Subject: ${subject}\n` +
-          `Description: ${truncatedDescription}\n` +
-          `Link: ${ticketLink}`;
+        const msgReceiver = renderTicketNewMessage({
+          requesterLabel: createdBy,
+          createdDate,
+          ticketId: requestObj.id,
+          category,
+          priority,
+          status: ticketStatus,
+          subject,
+          description: truncatedDescription,
+          link: ticketLink,
+        });
 
         const sentUnknown: unknown = await sock.sendMessage(receiverJid, { text: msgReceiver });
         const sent = sentUnknown as { key?: { id?: unknown; remoteJid?: unknown } };
@@ -573,14 +701,16 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         }
 
         if (requesterJid) {
-          const msgRequester =
-            `Dear *${createdBy}*,\n\n` +
-            `Your request has been created successfully with ticket ID *${requestObj.id}*.\n\n` +
-            `Category: ${category}\n` +
-            `Subject: ${subject}\n` +
-            `Description: ${truncatedDescription}\n` +
-            `Link: ${ticketLink}\n\n` +
-            `Thank you!`;
+          const msgRequester = renderRequesterTicketCreatedMessage({
+            requesterLabel: createdBy,
+            ticketId: requestObj.id,
+            status: ticketStatus,
+            priority,
+            category,
+            subject,
+            description: truncatedDescription,
+            link: ticketLink,
+          });
           await sock.sendMessage(requesterJid, { text: msgRequester });
         }
 
@@ -632,22 +762,25 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         changes.push(`Technician: ${currentTechnician}`);
       }
 
-      const msgReceiverUpdate =
-        `*Ticket Updated!*\n` +
-        `Ticket ID: ${requestObj.id}\n` +
-        `Requester: ${createdBy}\n` +
-        `Category: ${category}\n` +
-        `Subject: ${subject}\n` +
-        `${changes.join('\n')}\n` +
-        `Link: ${ticketLink}`;
+      const msgReceiverUpdate = renderTicketUpdateMessage({
+        ticketId: requestObj.id,
+        requesterLabel: createdBy,
+        category,
+        priority,
+        status: ticketStatus,
+        subject,
+        link: ticketLink,
+        changes,
+      });
       await sock.sendMessage(receiverJid, { text: msgReceiverUpdate });
 
       if (requesterJid && shouldNotify(payload.notify_requester_update)) {
-        const msgRequesterUpdate =
-          `Dear *${createdBy}*,\n\n` +
-          `Your ticket with ID *${requestObj.id}* has been updated.\n\n` +
-          `${changes.join('\n')}\n` +
-          `Link: ${ticketLink}`;
+        const msgRequesterUpdate = renderRequesterTicketUpdatedMessage({
+          requesterLabel: createdBy,
+          ticketId: requestObj.id,
+          link: ticketLink,
+          changes,
+        });
         await sock.sendMessage(requesterJid, { text: msgRequesterUpdate });
       }
 
@@ -667,21 +800,25 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
           });
 
           const technicianJid = phoneNumberFormatter(technicianContact.phone);
-          const msgTechnician =
-            `*Ticket assigned to you!*\n` +
-            `Ticket ID: ${requestObj.id}\n` +
-            `Requester: ${createdBy}\n` +
-            `Category: ${category}\n` +
-            `Subject: ${subject}\n` +
-            `Description: ${truncatedDescription}\n` +
-            `Link: ${ticketLink}`;
+          const msgTechnician = renderTicketAssignedToTechnicianMessage({
+            ticketId: requestObj.id,
+            requesterLabel: createdBy,
+            category,
+            priority,
+            status: ticketStatus,
+            subject,
+            description: truncatedDescription,
+            link: ticketLink,
+          });
           await sock.sendMessage(technicianJid, { text: msgTechnician });
 
           if (requesterJid && shouldNotify(payload.notify_requester_assign)) {
-            const msgRequesterAssign =
-              `Dear *${createdBy}*,\n\n` +
-              `Your ticket with ID *${requestObj.id}* has been assigned to *${technicianContact.name}*.\n` +
-              `Link: ${ticketLink}`;
+            const msgRequesterAssign = renderRequesterTicketAssignedMessage({
+              requesterLabel: createdBy,
+              ticketId: requestObj.id,
+              assigneeName: technicianContact.name,
+              link: ticketLink,
+            });
             await sock.sendMessage(requesterJid, { text: msgRequesterAssign });
           }
         }

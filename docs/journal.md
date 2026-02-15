@@ -308,3 +308,8 @@
 - Change:
   - Service category AI suggestion no longer fails the webhook when OpenAI returns 401.
   - Added `SERVICE_CATEGORY_AI_ENABLED=false` option to disable category AI.
+
+## [2026-02-15 16:29:25 WITA] Standardize ticketing WhatsApp notifications
+- Change:
+  - Reformatted ServiceDesk Plus webhook notifications using consistent English labels and spacing.
+  - Reformatted ticket claim reaction replies with consistent labels and outcomes.

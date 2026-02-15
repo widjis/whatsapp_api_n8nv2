@@ -341,10 +341,19 @@ async function handleTicketReactionClaim(args: {
   const tech = getContactByPhone(reacterPhone);
   const stored = await loadTicketNotification({ remoteJid: args.remoteJid, messageId: args.messageId });
   if (!stored) return;
+  const ticketId = stored.ticketId;
+
+  function renderClaimFailed(reason: string): string {
+    return `*Ticket Claim Failed*\nTicket ID: ${ticketId}\nReason: ${reason}`;
+  }
+
+  function renderAlreadyClaimed(by: string): string {
+    return `*Ticket Already Claimed*\nTicket ID: *${ticketId}*\nClaimed by: *${by}*`;
+  }
 
   if (!tech) {
     await args.sock.sendMessage(args.remoteJid, {
-      text: `Ticket ${stored.ticketId} cannot be claimed: phone ${reacterPhone} is not registered as a technician.`,
+      text: renderClaimFailed(`Phone ${reacterPhone} is not registered as a technician.`),
     });
     return;
   }
@@ -357,21 +366,27 @@ async function handleTicketReactionClaim(args: {
   });
 
   if (!claim.ok) {
-    await args.sock.sendMessage(args.remoteJid, { text: `Ticket ${stored.ticketId} cannot be claimed (${claim.reason}).` });
+    const reason =
+      claim.reason === 'not_found'
+        ? 'Ticket notification was not found.'
+        : claim.reason === 'invalid_record'
+          ? 'Ticket notification record is invalid.'
+          : 'Ticket notification storage error.';
+    await args.sock.sendMessage(args.remoteJid, { text: renderClaimFailed(reason) });
     return;
   }
 
   if (claim.wasClaimed) {
     const by = claim.record.claimedByName ?? claim.record.claimedByPhone ?? 'another technician';
-    await args.sock.sendMessage(args.remoteJid, { text: `Sorry, ticket *${stored.ticketId}* has been handled by *${by}*.` });
+    await args.sock.sendMessage(args.remoteJid, { text: renderAlreadyClaimed(by) });
     return;
   }
 
-  const requestObj = await viewRequest(stored.ticketId);
+  const requestObj = await viewRequest(ticketId);
   const priorityName = requestObj?.priority?.name;
   const priority = typeof priorityName === 'string' && priorityName.trim().length > 0 ? priorityName : 'Low';
 
-  const updateRes = await updateRequest(stored.ticketId, {
+  const updateRes = await updateRequest(ticketId, {
     ictTechnician: tech.ict_name,
     status: 'In Progress',
     priority,
@@ -379,27 +394,38 @@ async function handleTicketReactionClaim(args: {
 
   if (!updateRes.success) {
     await args.sock.sendMessage(args.remoteJid, {
-      text: `Ticket *${stored.ticketId}* claimed by *${tech.name}*, but failed to update status: ${updateRes.message}`,
+      text:
+        `*Ticket Claimed (Partial)*\n` +
+        `Ticket ID: *${ticketId}*\n` +
+        `Technician: *${tech.name}*\n` +
+        `Status update: Failed\n` +
+        `Details: ${updateRes.message}`,
     });
     return;
   }
 
   const groupName = determineServiceDeskGroupByRole(tech.technician);
   const assignRes = await assignTechnicianToRequest({
-    requestId: stored.ticketId,
+    requestId: ticketId,
     groupName,
     technicianName: tech.technician,
   });
 
   if (!assignRes.success) {
     await args.sock.sendMessage(args.remoteJid, {
-      text: `Ticket *${stored.ticketId}* claimed by *${tech.name}* and set to *In Progress*, but assignment failed: ${assignRes.message}`,
+      text:
+        `*Ticket Claimed (Partial)*\n` +
+        `Ticket ID: *${ticketId}*\n` +
+        `Technician: *${tech.name}*\n` +
+        `Status: *In Progress*\n` +
+        `Assignment: Failed\n` +
+        `Details: ${assignRes.message}`,
     });
     return;
   }
 
   await args.sock.sendMessage(args.remoteJid, {
-    text: `✅ Ticket *${stored.ticketId}* claimed by *${tech.name}* (status: *In Progress*).`,
+    text: `✅ Ticket *${ticketId}* claimed.\nTechnician: *${tech.name}*\nStatus: *In Progress*`,
   });
 }
 
