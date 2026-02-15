@@ -394,25 +394,133 @@ function parseMentionedJids(raw: unknown): string[] {
   }
 }
 
-async function findGroupIdByName(sock: WASocket, groupName: string): Promise<string | null> {
-  const groups = await sock.groupFetchAllParticipating();
-  const entries = Object.entries(groups);
-  const needle = groupName.toLowerCase();
-  const found = entries.find(([, group]) => {
-    if (!group.subject) return false;
-    return group.subject.toLowerCase().includes(needle);
-  });
-  return found ? found[0] : null;
+type GroupCacheEntry = {
+  id: string;
+  subject: string;
+  subjectLower: string;
+};
+
+type GroupCache = {
+  fetchedAtMs: number;
+  entries: GroupCacheEntry[];
+};
+
+type GroupResolveResult =
+  | { ok: true; chatId: string }
+  | { ok: false; reason: 'not_found' | 'rate_limited' | 'error'; message: string };
+
+let groupCache: GroupCache | null = null;
+let groupCacheInFlight: Promise<GroupCache | null> | null = null;
+let groupCacheBlockedUntilMs = 0;
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  if (n <= 0) return fallback;
+  return Math.floor(n);
 }
 
-async function resolveGroupChatId(args: { sock: WASocket; id?: string; name?: string }): Promise<string | null> {
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+function getErrorDataCode(error: unknown): number | null {
+  if (!error || typeof error !== 'object') return null;
+  const record = error as Record<string, unknown>;
+  const data = record.data;
+  if (typeof data === 'number' && Number.isFinite(data)) return data;
+  return null;
+}
+
+function isRateOverlimit(error: unknown): boolean {
+  const msg = getErrorMessage(error).toLowerCase();
+  if (msg.includes('rate-overlimit')) return true;
+  return getErrorDataCode(error) === 429;
+}
+
+async function fetchGroupCache(sock: WASocket): Promise<GroupCache> {
+  const groupsUnknown = await sock.groupFetchAllParticipating();
+  const groups = groupsUnknown as unknown as Record<string, { subject?: unknown }>;
+  const entries: GroupCacheEntry[] = [];
+  for (const [id, meta] of Object.entries(groups)) {
+    const subject = typeof meta?.subject === 'string' ? meta.subject : '';
+    if (!subject) continue;
+    entries.push({ id, subject, subjectLower: subject.toLowerCase() });
+  }
+  return { fetchedAtMs: Date.now(), entries };
+}
+
+async function getGroupCache(sock: WASocket): Promise<GroupCache | null> {
+  const ttlMs = readPositiveIntEnv('GROUP_CACHE_TTL_MS', 5 * 60 * 1000);
+  const backoffMs = readPositiveIntEnv('GROUP_CACHE_BACKOFF_MS', 60 * 1000);
+  const now = Date.now();
+
+  if (groupCache && now - groupCache.fetchedAtMs <= ttlMs) return groupCache;
+  if (now < groupCacheBlockedUntilMs) return groupCache;
+
+  if (groupCacheInFlight) return await groupCacheInFlight;
+
+  groupCacheInFlight = (async () => {
+    try {
+      const fetched = await fetchGroupCache(sock);
+      groupCache = fetched;
+      return fetched;
+    } catch (error) {
+      if (isRateOverlimit(error)) {
+        groupCacheBlockedUntilMs = Date.now() + backoffMs;
+        return groupCache;
+      }
+      return groupCache;
+    } finally {
+      groupCacheInFlight = null;
+    }
+  })();
+
+  return await groupCacheInFlight;
+}
+
+async function resolveGroupChatId(args: { sock: WASocket; id?: string; name?: string }): Promise<GroupResolveResult> {
   const id = args.id?.trim();
   const name = args.name?.trim();
-  if (id && id.includes('@g.us')) return id;
-  if (id && /^\d+$/.test(id)) return `${id}@g.us`;
-  if (id) return await findGroupIdByName(args.sock, id);
-  if (name) return await findGroupIdByName(args.sock, name);
-  return null;
+
+  if (id && id.includes('@g.us')) return { ok: true, chatId: id };
+  if (id && /^\d+$/.test(id)) return { ok: true, chatId: `${id}@g.us` };
+
+  const query = (id || name || '').trim();
+  if (!query) return { ok: false, reason: 'not_found', message: 'Missing group id or name' };
+
+  const now = Date.now();
+  const cached = await getGroupCache(args.sock);
+  const needle = query.toLowerCase();
+  const foundCached = cached?.entries.find((entry) => entry.subjectLower.includes(needle));
+  if (foundCached) return { ok: true, chatId: foundCached.id };
+
+  if (now < groupCacheBlockedUntilMs) {
+    return { ok: false, reason: 'rate_limited', message: 'WhatsApp group lookup rate limited. Try again later.' };
+  }
+
+  try {
+    const fetched = await fetchGroupCache(args.sock);
+    groupCache = fetched;
+    const foundFresh = fetched.entries.find((entry) => entry.subjectLower.includes(needle));
+    if (foundFresh) return { ok: true, chatId: foundFresh.id };
+    return { ok: false, reason: 'not_found', message: `No group found with name: ${query}` };
+  } catch (error) {
+    if (isRateOverlimit(error)) {
+      const backoffMs = readPositiveIntEnv('GROUP_CACHE_BACKOFF_MS', 60 * 1000);
+      groupCacheBlockedUntilMs = Date.now() + backoffMs;
+      return { ok: false, reason: 'rate_limited', message: 'WhatsApp group lookup rate limited. Try again later.' };
+    }
+    return { ok: false, reason: 'error', message: `Failed to lookup group: ${getErrorMessage(error)}` };
+  }
 }
 
 function normalizeReceiverJid(receiver: string): string {
@@ -595,12 +703,13 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
 
       const body = req.body as SendGroupMessageBody;
       const mentionedJids = parseMentionedJids(body.mention);
-      const chatId = await resolveGroupChatId({ sock, id: body.id, name: body.name });
-      if (!chatId) {
-        const provided = body.id?.trim() || body.name?.trim() || '';
-        res.status(422).json({ status: false, message: `No group found with name: ${provided}` });
+      const resolved = await resolveGroupChatId({ sock, id: body.id, name: body.name });
+      if (!resolved.ok) {
+        const statusCode = resolved.reason === 'rate_limited' ? 429 : resolved.reason === 'error' ? 503 : 422;
+        res.status(statusCode).json({ status: false, message: resolved.message });
         return;
       }
+      const chatId = resolved.chatId;
 
       const filesUnknown = (req as Request & { files?: unknown }).files;
       const document = pickUploadedFile(filesUnknown, 'document');
