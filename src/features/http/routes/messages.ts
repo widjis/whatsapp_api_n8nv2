@@ -796,6 +796,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
 
       if (payload.status === 'new') {
         let categoryForMessage = category;
+        let priorityForMessage = priority;
         const currentTemplateId = requestObj.template?.id ?? null;
         const shouldConvertTemplate = currentTemplateId !== '305';
         const shouldSuggestCategory = category === 'N/A' || category.trim().length === 0;
@@ -822,14 +823,17 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
           }
         }
 
-        if (shouldSetPriorityLow && (updateArgs.serviceCategory || updateArgs.templateId)) {
+        if (shouldSetPriorityLow) {
           updateArgs.priority = 'Low';
         }
 
-        if (updateArgs.serviceCategory || updateArgs.templateId) {
+        if (updateArgs.serviceCategory || updateArgs.templateId || updateArgs.priority) {
           const updateRes = await updateRequest(requestObj.id, updateArgs);
-          if (updateRes.success && updateArgs.serviceCategory) {
-            categoryForMessage = updateArgs.serviceCategory;
+          if (updateRes.success) {
+            if (updateArgs.serviceCategory) categoryForMessage = updateArgs.serviceCategory;
+            if (updateArgs.priority) priorityForMessage = updateArgs.priority;
+          } else {
+            console.warn(`Ticket update (new) failed for ${requestObj.id}: ${updateRes.message}`);
           }
         }
 
@@ -838,7 +842,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
           createdDate,
           ticketId: requestObj.id,
           category: categoryForMessage,
-          priority,
+          priority: priorityForMessage,
           status: ticketStatus,
           subject,
           description: truncatedDescription,
@@ -859,7 +863,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
             requesterLabel: createdBy,
             ticketId: requestObj.id,
             status: ticketStatus,
-            priority,
+            priority: priorityForMessage,
             category: categoryForMessage,
             subject,
             description: truncatedDescription,
@@ -875,11 +879,40 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         await saveTicketState(requestObj.id, {
           technician: requestObj.udf_fields?.udf_pick_601,
           ticketStatus,
-          priority,
+          priority: priorityForMessage,
         });
 
         res.status(200).json({ message: 'Notification sent successfully' });
         return;
+      }
+
+      let categoryForMessage = category;
+      let priorityForMessage = priority;
+      const shouldSuggestCategory = category === 'N/A' || category.trim().length === 0;
+      const shouldSetPriorityLow = priority === 'N/A' || priority.trim().length === 0;
+
+      const updateArgs: {
+        serviceCategory?: string;
+        priority?: string;
+      } = {};
+
+      if (shouldSuggestCategory) {
+        const suggestedCategory = await defineServiceCategory(requestObj.id);
+        if (suggestedCategory) updateArgs.serviceCategory = suggestedCategory;
+      }
+
+      if (shouldSetPriorityLow) {
+        updateArgs.priority = 'Low';
+      }
+
+      if (updateArgs.serviceCategory || updateArgs.priority) {
+        const updateRes = await updateRequest(requestObj.id, updateArgs);
+        if (updateRes.success) {
+          if (updateArgs.serviceCategory) categoryForMessage = updateArgs.serviceCategory;
+          if (updateArgs.priority) priorityForMessage = updateArgs.priority;
+        } else {
+          console.warn(`Ticket update (updated) failed for ${requestObj.id}: ${updateRes.message}`);
+        }
       }
 
       const previousState = await loadPreviousTicketState(requestObj.id);
@@ -907,8 +940,8 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       const msgReceiverUpdate = renderTicketUpdateMessage({
         ticketId: requestObj.id,
         requesterLabel: createdBy,
-        category,
-        priority,
+        category: categoryForMessage,
+        priority: priorityForMessage,
         status: ticketStatus,
         subject,
         link: ticketLink,
@@ -945,8 +978,8 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
           const msgTechnician = renderTicketAssignedToTechnicianMessage({
             ticketId: requestObj.id,
             requesterLabel: createdBy,
-            category,
-            priority,
+            category: categoryForMessage,
+            priority: priorityForMessage,
             status: ticketStatus,
             subject,
             description: truncatedDescription,
@@ -973,7 +1006,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       await saveTicketState(requestObj.id, {
         technician: currentTechnician,
         ticketStatus,
-        priority,
+        priority: priorityForMessage,
       });
 
       res.status(200).json({ message: 'Notification sent successfully' });

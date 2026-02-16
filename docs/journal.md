@@ -525,3 +525,18 @@
   - Added LDAP client-level error handler to avoid unhandled `error` events.
 - Impact:
   - LDAP connection resets now fail the current lookup without terminating Node.
+
+## [2026-02-16 11:21:09] Ensure Low priority and category analysis for ticket notifications
+- Change:
+  - For both `new` and `updated` webhook events: if priority is missing/empty, sets it to `Low`.
+  - For both `new` and `updated` webhook events: if service category is missing/empty, analyzes and sets it before sending notifications.
+- Impact:
+  - Notifications consistently contain priority/category, and ServiceDesk data stays normalized.
+
+## [2026-02-16 11:25:48] Fix category normalization when AI is unavailable and avoid priority overrides
+- Change:
+  - Added non-AI heuristic category detection fallback when AI is disabled/unconfigured.
+  - Updated ServiceDesk update payload to only include priority when explicitly requested.
+  - Added warnings when pre-notification normalization updates fail.
+- Impact:
+  - Category is no longer stuck at `N/A` when AI is off, and existing priorities are preserved.

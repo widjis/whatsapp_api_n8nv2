@@ -217,7 +217,7 @@ export async function updateRequest(changeId: string, args: UpdateRequestArgs = 
     technicianName,
     ictTechnician,
     resolution,
-    priority = 'Low',
+    priority,
   } = args;
 
   const updateData: {
@@ -233,13 +233,15 @@ export async function updateRequest(changeId: string, args: UpdateRequestArgs = 
       service_category?: { name: string };
       technician?: { name: string } | null;
       udf_fields?: { udf_pick_601: string };
-      priority: { name: string };
+      priority?: { name: string };
     };
   } = {
-    request: {
-      priority: { name: priority },
-    },
+    request: {},
   };
+
+  if (typeof priority === 'string' && priority.trim().length > 0) {
+    updateData.request.priority = { name: priority };
+  }
 
   if (templateId && templateName) {
     updateData.request.template = {
@@ -257,6 +259,10 @@ export async function updateRequest(changeId: string, args: UpdateRequestArgs = 
   if (technicianName === null) updateData.request.technician = null;
   else if (technicianName) updateData.request.technician = { name: technicianName };
   if (ictTechnician) updateData.request.udf_fields = { udf_pick_601: ictTechnician };
+
+  if (Object.keys(updateData.request).length === 0) {
+    return { success: false, message: 'No fields to update.' };
+  }
 
   const data = `input_data=${encodeURIComponent(JSON.stringify(updateData))}`;
 
@@ -512,16 +518,76 @@ async function analyzeImageWithPrompt(base64Image: string, prompt: string): Prom
   return chatCompletion.choices[0]?.message?.content ?? '';
 }
 
-export async function defineServiceCategory(changeId: string): Promise<string | null> {
-  if (!isServiceCategoryAiEnabled()) return null;
-  if (!getOptionalEnv('OPENAI_API_KEY')) return null;
+function stripHtmlTags(input: string): string {
+  if (!input) return '';
+  return input.replace(/<[^>]*>/g, ' ');
+}
 
+function normalizeCategoryText(subject: string, description: string): string {
+  const combined = `${subject} ${stripHtmlTags(description)}`.toLowerCase();
+  return combined.replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function guessServiceCategoryFromText(subject: string, description: string): string {
+  const text = ` ${normalizeCategoryText(subject, description)} `;
+
+  const rules: Array<{ category: string; keywords: string[] }> = [
+    { category: '14. IT Service Request Form', keywords: ['service request form', 'srf', 'form'] },
+    { category: '03. Printer&Scanner', keywords: ['printer', 'scanner', 'scan'] },
+    { category: '09. Network', keywords: ['lan', 'wifi', 'network', 'internet', 'kabel', 'cable', 'switch', 'router', 'vpn', 'ip'] },
+    { category: '08. File Server', keywords: ['file server', 'fileserver', 'shared folder', 'share folder', 'shared', 'folder', 'nas'] },
+    { category: '02. Office Application', keywords: ['office', 'excel', 'word', 'powerpoint', 'ppt'] },
+    { category: '16. IT System and Mail', keywords: ['email', 'mail', 'outlook', 'smtp'] },
+    { category: '13. CCTV', keywords: ['cctv', 'camera'] },
+    { category: '12. Access Card', keywords: ['access card', 'rfid', 'door access'] },
+    { category: '11. Deskphone', keywords: ['deskphone', 'extension', 'pabx'] },
+    { category: '10. Radio HT', keywords: ['radio', 'ht'] },
+    { category: '05. LED Monitor', keywords: ['monitor'] },
+    { category: '04. IT Peripheral', keywords: ['mouse', 'keyboard', 'webcam', 'headset', 'speaker'] },
+    { category: '01. PC/Laptop', keywords: ['laptop', 'notebook', 'pc', 'komputer', 'computer'] },
+    { category: '06. Television', keywords: ['television', 'tv'] },
+    { category: '21. Document Control', keywords: ['document control'] },
+    { category: '20. Preventive Maintenance Network', keywords: ['preventive maintenance', 'pm network'] },
+    { category: '19. Preventive Maintenance Support', keywords: ['preventive maintenance', 'pm support'] },
+    { category: '18. IT Project Related to Network', keywords: ['project network', 'network project'] },
+    { category: '17. IT Project Related to System', keywords: ['project system', 'system project'] },
+    { category: '15. Other', keywords: [] },
+  ];
+
+  let bestCategory = '15. Other';
+  let bestScore = 0;
+
+  for (const rule of rules) {
+    if (rule.keywords.length === 0) continue;
+
+    let score = 0;
+    for (const keyword of rule.keywords) {
+      const kw = ` ${keyword.replace(/[^a-z0-9]+/g, ' ').trim()} `;
+      if (kw.trim().length === 0) continue;
+      if (text.includes(kw)) score += 1;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestCategory = rule.category;
+    }
+  }
+
+  return bestCategory;
+}
+
+export async function defineServiceCategory(changeId: string): Promise<string | null> {
   const requestData = await viewRequest(changeId);
   if (!requestData) return null;
 
   const subject = requestData.subject ?? '';
   const description = requestData.description ?? '';
   if (!subject && !description) return null;
+
+  const heuristicCategory = guessServiceCategoryFromText(subject, description);
+
+  if (!isServiceCategoryAiEnabled()) return heuristicCategory;
+  if (!getOptionalEnv('OPENAI_API_KEY')) return heuristicCategory;
 
   const input = `Here is a list of service categories: ${serviceCategories.join(', ')}.\nBased on the following subject and description, select the most appropriate category:\n\nSubject: ${subject}\nDescription: ${description}, answer only with the service category`;
 
@@ -531,7 +597,7 @@ export async function defineServiceCategory(changeId: string): Promise<string | 
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Service category AI skipped: ${message}`);
-    return null;
+    return heuristicCategory;
   }
 
   for (const category of serviceCategories) {
