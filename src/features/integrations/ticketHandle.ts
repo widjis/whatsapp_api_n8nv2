@@ -2,12 +2,15 @@ import axios from 'axios';
 import fs from 'node:fs';
 import https from 'node:https';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import pdfParse from 'pdf-parse';
 import { JSDOM } from 'jsdom';
 import FormData from 'form-data';
 import OpenAI from 'openai';
 import Tesseract from 'tesseract.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
 
 type ServiceDeskCategory = {
   name: string;
@@ -608,7 +611,7 @@ export async function ticketReport(args: TicketReportArgs = {}): Promise<string>
 }
 
 async function downloadPdf(downloadUrl: string, attachmentName: string): Promise<string> {
-  const outputDir = path.join(__dirname, 'temp_pdf_files');
+  const outputDir = path.join(currentDir, 'temp_pdf_files');
   if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
   const pdfPath = path.join(outputDir, attachmentName);
 

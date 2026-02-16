@@ -466,3 +466,16 @@
   - Updated docker-compose restart policy to `restart: always`.
 - Impact:
   - Container restarts automatically whenever the process exits.
+
+## [2026-02-16 09:45:23] Fix __dirname ReferenceError in PDF handling
+- Change:
+  - Replaced `__dirname` usage with `import.meta.url`-based directory resolution in ticket PDF download.
+- Impact:
+  - Prevents crashes when processing PDF attachments in Node ESM builds.
+
+## [2026-02-16 09:58:29] Improve ticket claim reaction handling and diagnostics
+- Change:
+  - Added reaction claim/unclaim fallback for reactions delivered via `messages.upsert`.
+  - Added reaction debug logs for common ignore reasons and deduped duplicate events.
+- Impact:
+  - Ticket assignment via reactions is more reliable across Baileys event variants.

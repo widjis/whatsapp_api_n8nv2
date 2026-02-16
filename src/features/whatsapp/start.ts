@@ -108,18 +108,43 @@ function buildUploadsFileUrl(baseUrl: string, fileName: string): string {
 
 type TicketReactionDebugPayload = {
   event: 'claim' | 'unclaim';
+  source?: 'messages.reaction' | 'messages.upsert';
   remoteJid: string;
   messageId: string;
+  reactionText?: string | null;
   participantRaw?: string;
   participantResolved?: string;
   participantDigits?: string | null;
   sockUserJid?: string;
   sockDigits?: string | null;
+  ignoredReason?: string;
 };
 
 function logTicketReactionDebug(payload: TicketReactionDebugPayload): void {
   if (!DEBUG_TICKET_REACTIONS) return;
   console.log('[ticket-reaction]', JSON.stringify(payload));
+}
+
+const recentReactionEvents = new Map<string, number>();
+
+function buildReactionEventKey(args: {
+  remoteJid: string;
+  messageId: string;
+  participantRaw: string;
+  reactionText: string | null;
+}): string {
+  return `${args.remoteJid}|${args.messageId}|${args.participantRaw}|${args.reactionText ?? ''}`;
+}
+
+function shouldProcessReactionEvent(key: string): boolean {
+  const now = Date.now();
+  for (const [k, t] of recentReactionEvents) {
+    if (now - t > 15_000) recentReactionEvents.delete(k);
+  }
+  const last = recentReactionEvents.get(key);
+  if (last !== undefined && now - last < 5_000) return false;
+  recentReactionEvents.set(key, now);
+  return true;
 }
 
 type PresenceState = { isTyping: boolean; lastUpdateMs: number };
@@ -817,6 +842,17 @@ function getRequesterPhoneFromMessage(msg: proto.IWebMessageInfo, remoteJid: str
   return match?.[1];
 }
 
+function extractParticipantRawFromUpsert(msg: proto.IWebMessageInfo): string | null {
+  const viaKey = typeof msg.key?.participant === 'string' ? msg.key.participant : null;
+  if (viaKey) return viaKey;
+
+  const viaTopLevel =
+    typeof (msg as unknown as { participant?: unknown }).participant === 'string'
+      ? ((msg as unknown as { participant?: string }).participant ?? null)
+      : null;
+  return viaTopLevel;
+}
+
 function parseReactionGroupIds(): Set<string> {
   const raw = process.env.TICKET_REACTION_GROUP_IDS;
   if (!raw) return new Set();
@@ -864,6 +900,7 @@ function isReactionRemoved(reactionText: string | null | undefined): boolean {
 async function handleTicketReactionClaim(args: {
   sock: WASocket;
   deps: StartWhatsAppDeps;
+  source: 'messages.reaction' | 'messages.upsert';
   remoteJid: string;
   messageId: string;
   participantRaw: string;
@@ -885,6 +922,7 @@ async function handleTicketReactionClaim(args: {
 
   logTicketReactionDebug({
     event: 'claim',
+    source: args.source,
     remoteJid: args.remoteJid,
     messageId: args.messageId,
     participantRaw: args.participantRaw,
@@ -991,6 +1029,7 @@ async function handleTicketReactionClaim(args: {
 async function handleTicketReactionUnclaim(args: {
   sock: WASocket;
   deps: StartWhatsAppDeps;
+  source: 'messages.reaction' | 'messages.upsert';
   remoteJid: string;
   messageId: string;
   participantRaw: string;
@@ -1011,6 +1050,7 @@ async function handleTicketReactionUnclaim(args: {
 
   logTicketReactionDebug({
     event: 'unclaim',
+    source: args.source,
     remoteJid: args.remoteJid,
     messageId: args.messageId,
     participantRaw: args.participantRaw,
@@ -2153,6 +2193,91 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
       if (!remoteJid) continue;
       if (remoteJid === 'status@broadcast') continue;
 
+      const reactionTarget = extractReactionTargetFromMessage(msg.message);
+      if (reactionTarget) {
+        const participantRaw = extractParticipantRawFromUpsert(msg);
+        const reactionText = reactionTarget.text ?? null;
+        const event: TicketReactionDebugPayload['event'] = isReactionRemoved(reactionText) ? 'unclaim' : 'claim';
+
+        if (allowedReactionGroups.size === 0) {
+          logTicketReactionDebug({
+            event,
+            source: 'messages.upsert',
+            remoteJid,
+            messageId: reactionTarget.messageId,
+            reactionText,
+            participantRaw: participantRaw ?? undefined,
+            ignoredReason: 'no_allowed_groups_configured',
+          });
+          continue;
+        }
+
+        if (!allowedReactionGroups.has(remoteJid)) {
+          logTicketReactionDebug({
+            event,
+            source: 'messages.upsert',
+            remoteJid,
+            messageId: reactionTarget.messageId,
+            reactionText,
+            participantRaw: participantRaw ?? undefined,
+            ignoredReason: 'group_not_allowed',
+          });
+          continue;
+        }
+
+        if (!participantRaw) {
+          logTicketReactionDebug({
+            event,
+            source: 'messages.upsert',
+            remoteJid,
+            messageId: reactionTarget.messageId,
+            reactionText,
+            ignoredReason: 'missing_participant',
+          });
+          continue;
+        }
+
+        const eventKey = buildReactionEventKey({
+          remoteJid,
+          messageId: reactionTarget.messageId,
+          participantRaw,
+          reactionText,
+        });
+        if (!shouldProcessReactionEvent(eventKey)) {
+          logTicketReactionDebug({
+            event,
+            source: 'messages.upsert',
+            remoteJid,
+            messageId: reactionTarget.messageId,
+            reactionText,
+            participantRaw,
+            ignoredReason: 'dedupe_skip',
+          });
+          continue;
+        }
+
+        if (isReactionRemoved(reactionText)) {
+          await handleTicketReactionUnclaim({
+            sock: currentSock,
+            deps,
+            source: 'messages.upsert',
+            remoteJid,
+            messageId: reactionTarget.messageId,
+            participantRaw,
+          });
+        } else {
+          await handleTicketReactionClaim({
+            sock: currentSock,
+            deps,
+            source: 'messages.upsert',
+            remoteJid,
+            messageId: reactionTarget.messageId,
+            participantRaw,
+          });
+        }
+        continue;
+      }
+
       const parsed = await parseIncomingMessage({ sock: currentSock, msg });
       const messageContent = parsed.text;
       if (messageContent.startsWith('/')) {
@@ -2266,7 +2391,16 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
       const remoteJid = typeof item.key?.remoteJid === 'string' ? item.key.remoteJid : undefined;
       const messageId = typeof item.key?.id === 'string' ? item.key.id : undefined;
       if (!remoteJid || !messageId) continue;
-      if (!allowedGroups.has(remoteJid)) continue;
+      if (!allowedGroups.has(remoteJid)) {
+        logTicketReactionDebug({
+          event: 'claim',
+          source: 'messages.reaction',
+          remoteJid,
+          messageId,
+          ignoredReason: 'group_not_allowed',
+        });
+        continue;
+      }
 
       const participantRaw =
         typeof item.key?.participant === 'string'
@@ -2274,11 +2408,44 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
           : typeof item.reaction?.key?.participant === 'string'
             ? item.reaction.key.participant
             : undefined;
-      if (!participantRaw) continue;
+      if (!participantRaw) {
+        logTicketReactionDebug({
+          event: 'claim',
+          source: 'messages.reaction',
+          remoteJid,
+          messageId,
+          ignoredReason: 'missing_participant',
+        });
+        continue;
+      }
 
       const reactionText =
         typeof item.reaction?.text === 'string' ? item.reaction.text : item.reaction?.text === null ? null : undefined;
-      if (reactionText === undefined) continue;
+      if (reactionText === undefined) {
+        logTicketReactionDebug({
+          event: 'claim',
+          source: 'messages.reaction',
+          remoteJid,
+          messageId,
+          participantRaw,
+          ignoredReason: 'missing_reaction_text',
+        });
+        continue;
+      }
+
+      const eventKey = buildReactionEventKey({ remoteJid, messageId, participantRaw, reactionText });
+      if (!shouldProcessReactionEvent(eventKey)) {
+        logTicketReactionDebug({
+          event: isReactionRemoved(reactionText) ? 'unclaim' : 'claim',
+          source: 'messages.reaction',
+          remoteJid,
+          messageId,
+          reactionText,
+          participantRaw,
+          ignoredReason: 'dedupe_skip',
+        });
+        continue;
+      }
 
       const participantJid = resolveParticipantJid({
         participant: participantRaw,
@@ -2292,6 +2459,7 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
         await handleTicketReactionUnclaim({
           sock: currentSock,
           deps,
+          source: 'messages.reaction',
           remoteJid,
           messageId,
           participantRaw,
@@ -2300,6 +2468,7 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
         await handleTicketReactionClaim({
           sock: currentSock,
           deps,
+          source: 'messages.reaction',
           remoteJid,
           messageId,
           participantRaw,
