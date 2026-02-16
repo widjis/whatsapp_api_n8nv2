@@ -835,7 +835,7 @@ async function convertPdfToImages(pdfPath: string): Promise<string[]> {
     .filter(Boolean);
 }
 
-const isTestEnvironment = true;
+const isTestEnvironment =false;
 const chatId = isTestEnvironment ? '120363123402010871@g.us' : '120363162455880145@g.us';
 
 const srfApprovalDedup = new Map<string, number>();
