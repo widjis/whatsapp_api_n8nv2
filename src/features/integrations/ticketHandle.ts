@@ -61,6 +61,10 @@ export type ServiceDeskRequest = {
   created_time?: ServiceDeskDisplayTime;
 };
 
+type HandleAttachmentsOptions = {
+  allowSrfApproval: boolean;
+};
+
 type ServiceDeskViewResponse = {
   request?: ServiceDeskRequest;
 };
@@ -912,7 +916,10 @@ async function sendGroupMessage(args: {
   }
 }
 
-export async function handleAndAnalyzeAttachments(requestDetails: ServiceDeskRequest): Promise<AnalyzedAttachmentResult[]> {
+export async function handleAndAnalyzeAttachments(
+  requestDetails: ServiceDeskRequest,
+  options: HandleAttachmentsOptions = { allowSrfApproval: true }
+): Promise<AnalyzedAttachmentResult[]> {
   const { hostBaseUrl } = getServiceDeskUrls();
   const headers = getServiceDeskHeaders();
 
@@ -951,6 +958,11 @@ export async function handleAndAnalyzeAttachments(requestDetails: ServiceDeskReq
           });
 
           if (!isSrf) return;
+
+          if (!options.allowSrfApproval) {
+            analyzedResults.push({ name: attachmentName, analysis: 'Skipped SRF approval send (not new event)' });
+            return;
+          }
 
           if (!shouldSendSrfApproval({ ticketId: requestDetails.id, attachmentContentUrl: attachment.content_url })) {
             console.log(

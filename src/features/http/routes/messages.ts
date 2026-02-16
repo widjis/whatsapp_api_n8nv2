@@ -886,7 +886,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         }
 
         if ((requestObj.attachments?.length ?? 0) > 0) {
-          await handleAndAnalyzeAttachments(requestObj);
+          await handleAndAnalyzeAttachments(requestObj, { allowSrfApproval: true });
         }
 
         await saveTicketState(requestObj.id, {
@@ -1043,7 +1043,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       }
 
       if ((requestObj.attachments?.length ?? 0) > 0) {
-        await handleAndAnalyzeAttachments(requestObj);
+        await handleAndAnalyzeAttachments(requestObj, { allowSrfApproval: false });
       }
 
       await saveTicketState(requestObj.id, {

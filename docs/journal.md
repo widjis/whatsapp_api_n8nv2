@@ -552,3 +552,9 @@
   - When `udf_pick_601` (ICT technician) becomes assigned (and is not `ICT Helpdesk`), updates ticket status to `In Progress`.
 - Impact:
   - Assigned tickets automatically move out of `Open` and reflect active work.
+
+## [2026-02-16 15:57:35] Send SRF approval PDFs only on new ticket events
+- Change:
+  - SRF approval PDF send-to-group now runs only for `status=new` webhook events.
+- Impact:
+  - Updating a ticket no longer re-sends the SRF PDF to the group.
