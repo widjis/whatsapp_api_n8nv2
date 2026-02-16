@@ -40,12 +40,19 @@ type ServiceDeskAttachment = {
   content_url: string;
 };
 
+type ServiceDeskTemplate = {
+  is_service_template?: boolean;
+  name?: string;
+  id?: string;
+};
+
 export type ServiceDeskRequest = {
   id: string;
   subject?: string;
   description?: string;
   requester?: ServiceDeskRequester;
   service_category?: ServiceDeskCategory;
+  template?: ServiceDeskTemplate;
   status?: ServiceDeskCategory;
   priority?: ServiceDeskCategory;
   udf_fields?: ServiceDeskUdfFields;

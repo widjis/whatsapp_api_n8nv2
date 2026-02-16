@@ -796,17 +796,40 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
 
       if (payload.status === 'new') {
         let categoryForMessage = category;
-        if (category === 'N/A' || category.trim().length === 0) {
+        const currentTemplateId = requestObj.template?.id ?? null;
+        const shouldConvertTemplate = currentTemplateId !== '305';
+        const shouldSuggestCategory = category === 'N/A' || category.trim().length === 0;
+        const shouldSetPriorityLow = priority === 'N/A' || priority.trim().length === 0;
+
+        const updateArgs: {
+          templateId?: string;
+          templateName?: string;
+          isServiceTemplate?: boolean;
+          serviceCategory?: string;
+          priority?: string;
+        } = {};
+
+        if (shouldConvertTemplate) {
+          updateArgs.templateId = '305';
+          updateArgs.templateName = 'Submit a New Request';
+          updateArgs.isServiceTemplate = false;
+        }
+
+        if (shouldSuggestCategory) {
           const suggestedCategory = await defineServiceCategory(requestObj.id);
           if (suggestedCategory) {
-            const priorityForUpdate = priority !== 'N/A' ? priority : 'Low';
-            const updateRes = await updateRequest(requestObj.id, {
-              serviceCategory: suggestedCategory,
-              priority: priorityForUpdate,
-            });
-            if (updateRes.success) {
-              categoryForMessage = suggestedCategory;
-            }
+            updateArgs.serviceCategory = suggestedCategory;
+          }
+        }
+
+        if (shouldSetPriorityLow && (updateArgs.serviceCategory || updateArgs.templateId)) {
+          updateArgs.priority = 'Low';
+        }
+
+        if (updateArgs.serviceCategory || updateArgs.templateId) {
+          const updateRes = await updateRequest(requestObj.id, updateArgs);
+          if (updateRes.success && updateArgs.serviceCategory) {
+            categoryForMessage = updateArgs.serviceCategory;
           }
         }
 

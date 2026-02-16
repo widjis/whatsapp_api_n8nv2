@@ -479,3 +479,9 @@
   - Added reaction debug logs for common ignore reasons and deduped duplicate events.
 - Impact:
   - Ticket assignment via reactions is more reliable across Baileys event variants.
+
+## [2026-02-16 10:18:51] Convert new tickets to “Submit a New Request” template
+- Change:
+  - On `status=new` webhook, updates template to ID `305` (“Submit a New Request”) when not already set.
+- Impact:
+  - Email-originated tickets that arrive under “Default Template” are normalized automatically.
