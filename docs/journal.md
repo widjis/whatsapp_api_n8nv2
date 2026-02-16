@@ -485,3 +485,29 @@
   - On `status=new` webhook, updates template to ID `305` (“Submit a New Request”) when not already set.
 - Impact:
   - Email-originated tickets that arrive under “Default Template” are normalized automatically.
+
+## [2026-02-16 10:30:12 +08:00] Add detailed SRF detection logs
+- Change:
+  - Added step-by-step SRF detection logs for subject, description, attachment name, and PDF first-page checks.
+- Impact:
+  - Makes it clear why a PDF attachment is classified as SRF or not.
+
+## [2026-02-16 10:43:05 +08:00] Include SRF detection reasons in result logs
+- Change:
+  - Logged explicit SRF reasons (subject/description/attachment/PDF) in the final result line.
+- Impact:
+  - Reduces confusion when multiple attachments are processed concurrently.
+
+## [2026-02-16 10:45:59 +08:00] Make SRF detection attachment-scoped for PDF processing
+- Change:
+  - SRF detection used by PDF attachment processing now requires attachment evidence (filename/PDF text).
+  - Logs now include `scope` and show ignored subject/description matches when attachment-scoped.
+- Impact:
+  - Prevents non-SRF PDFs from being treated as SRF just because the ticket subject includes “request”.
+
+## [2026-02-16 10:49:25 +08:00] Auto-delete temporary SRF PDFs after processing
+- Change:
+  - Deleted SRF keyword-scan PDFs after first-page extraction.
+  - Deleted sent SRF PDFs after `/send-group-message` succeeds.
+- Impact:
+  - Prevents `temp_pdf_files/` from accumulating old PDFs.

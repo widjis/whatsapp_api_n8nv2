@@ -652,44 +652,98 @@ async function extractTextFromPdfFirstPage(pdfPath: string): Promise<string> {
 }
 
 async function isSrfRequest(requestDetails: {
+  requestId?: string;
+  scope?: 'ticket' | 'attachment';
   subject?: string;
   description?: string;
   attachments?: ServiceDeskAttachment[];
 }): Promise<boolean> {
   const { hostBaseUrl } = getServiceDeskUrls();
 
-  const srfKeywords = [/service request form/i, /\bsrf\b/i, /service request/i, /request/i];
-  const matchesKeywords = (text: unknown): boolean =>
-    typeof text === 'string' && srfKeywords.some((regex) => regex.test(text));
+  const srfKeywords: Array<{ label: string; regex: RegExp }> = [
+    { label: 'service request form', regex: /service request form/i },
+    { label: 'srf', regex: /\bsrf\b/i },
+    { label: 'service request', regex: /service request/i },
+    { label: 'request', regex: /request/i },
+  ];
 
-  const subjectContainsKeyword = matchesKeywords(requestDetails.subject ?? '');
-  const descriptionContainsKeyword = matchesKeywords(requestDetails.description ?? '');
+  const findKeywordMatch = (text: unknown): string | null => {
+    if (typeof text !== 'string') return null;
+    for (const k of srfKeywords) {
+      if (k.regex.test(text)) return k.label;
+    }
+    return null;
+  };
+
+  const scope = requestDetails.scope ?? 'ticket';
+  const prefix = `[SRF_DETECTION]${requestDetails.requestId ? `[ticket:${requestDetails.requestId}]` : ''}[scope:${scope}]`;
+
+  const subjectMatch = findKeywordMatch(requestDetails.subject ?? '');
+  const descriptionMatch = findKeywordMatch(requestDetails.description ?? '');
+  const reasons: string[] = [];
+  if (scope === 'ticket') {
+    if (subjectMatch) reasons.push(`subject:${subjectMatch}`);
+    if (descriptionMatch) reasons.push(`description:${descriptionMatch}`);
+  }
+  console.log(
+    `${prefix} subject=${subjectMatch ? `match:${subjectMatch}` : 'no-match'} description=${
+      descriptionMatch ? `match:${descriptionMatch}` : 'no-match'
+    }`
+  );
 
   let attachmentsContainKeyword = false;
   if (Array.isArray(requestDetails.attachments)) {
     for (const attachment of requestDetails.attachments) {
-      if (matchesKeywords(attachment.name)) {
+      const attachmentNameMatch = findKeywordMatch(attachment.name);
+      if (attachmentNameMatch) {
+        reasons.push(`attachmentName:${attachmentNameMatch}`);
+        console.log(`${prefix} attachment="${attachment.name}" name=match:${attachmentNameMatch}`);
         attachmentsContainKeyword = true;
         break;
       }
+
+      console.log(`${prefix} attachment="${attachment.name}" name=no-match`);
 
       if (attachment.name.endsWith('.pdf')) {
         const downloadUrl = `${hostBaseUrl}${attachment.content_url}`;
         try {
           const pdfPath = await downloadPdf(downloadUrl, attachment.name);
-          const firstPageText = await extractTextFromPdfFirstPage(pdfPath);
-          if (matchesKeywords(firstPageText)) {
-            attachmentsContainKeyword = true;
-            break;
+          try {
+            const firstPageText = await extractTextFromPdfFirstPage(pdfPath);
+            const pdfTextMatch = findKeywordMatch(firstPageText);
+            if (pdfTextMatch) reasons.push(`pdfFirstPage:${pdfTextMatch}`);
+            console.log(
+              `${prefix} attachment="${attachment.name}" pdfFirstPage=${pdfTextMatch ? `match:${pdfTextMatch}` : 'no-match'}`
+            );
+            if (pdfTextMatch) {
+              attachmentsContainKeyword = true;
+              break;
+            }
+          } finally {
+            await fs.promises.unlink(pdfPath).catch(() => undefined);
           }
         } catch (error) {
-          console.error(`Error processing PDF ${attachment.name}:`, error);
+          console.error(`${prefix} attachment="${attachment.name}" pdfFirstPage=error`, error);
         }
+      } else if (attachment.name.toLowerCase().endsWith('.pdf')) {
+        reasons.push('pdfFirstPage:skipped-case-sensitive-extension');
+        console.log(`${prefix} attachment="${attachment.name}" pdfFirstPage=skipped-case-sensitive-extension`);
       }
     }
   }
 
-  return subjectContainsKeyword || descriptionContainsKeyword || attachmentsContainKeyword;
+  const isSrf = scope === 'attachment' ? attachmentsContainKeyword : Boolean(subjectMatch || descriptionMatch || attachmentsContainKeyword);
+  const ignored: string[] = [];
+  if (scope === 'attachment') {
+    if (subjectMatch) ignored.push(`subject:${subjectMatch}`);
+    if (descriptionMatch) ignored.push(`description:${descriptionMatch}`);
+  }
+  console.log(
+    `${prefix} result=${isSrf ? 'SRF' : 'NOT_SRF'} reasons=${reasons.length > 0 ? reasons.join(',') : 'none'} ignored=${
+      ignored.length > 0 ? ignored.join(',') : 'none'
+    }`
+  );
+  return isSrf;
 }
 
 function extractContent(html: string): string[] {
@@ -760,12 +814,18 @@ async function sendGroupMessage(args: {
     });
   }
 
+  let shouldCleanup = false;
   try {
     const response = await axios.post(url, formData, { headers: { ...formData.getHeaders() } });
-    if (response.status === 200) return response.data;
+    if (response.status === 200) {
+      shouldCleanup = true;
+      return response.data;
+    }
     throw new Error('Failed to send message');
   } finally {
-    if (imagePath) fs.unlinkSync(imagePath);
+    if (!shouldCleanup) return;
+    if (documentPath) await fs.promises.unlink(documentPath).catch(() => undefined);
+    if (imagePath) await fs.promises.unlink(imagePath).catch(() => undefined);
   }
 }
 
@@ -800,6 +860,8 @@ export async function handleAndAnalyzeAttachments(requestDetails: ServiceDeskReq
 
         if (contentType.startsWith('application/pdf')) {
           const isSrf = await isSrfRequest({
+            requestId: requestDetails.id,
+            scope: 'attachment',
             subject: requestDetails.subject,
             description: descriptionParts.join('\n'),
             attachments: [attachment],
@@ -826,7 +888,7 @@ export async function handleAndAnalyzeAttachments(requestDetails: ServiceDeskReq
             documentPath: pdfPath,
           });
 
-          analyzedResults.push({ name: attachmentName, analysis: finalAnalysis, pdfPath });
+          analyzedResults.push({ name: attachmentName, analysis: finalAnalysis });
           return;
         }
 
