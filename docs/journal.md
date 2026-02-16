@@ -540,3 +540,9 @@
   - Added warnings when pre-notification normalization updates fail.
 - Impact:
   - Category is no longer stuck at `N/A` when AI is off, and existing priorities are preserved.
+
+## [2026-02-16 11:31:14] Use refreshed ServiceDesk values in notifications after normalization
+- Change:
+  - After applying category/priority normalization updates, re-fetches the request and uses the refreshed values in WhatsApp notifications.
+- Impact:
+  - Prevents `Category: N/A` in notifications when the category was just updated.

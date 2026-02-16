@@ -830,8 +830,21 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         if (updateArgs.serviceCategory || updateArgs.templateId || updateArgs.priority) {
           const updateRes = await updateRequest(requestObj.id, updateArgs);
           if (updateRes.success) {
-            if (updateArgs.serviceCategory) categoryForMessage = updateArgs.serviceCategory;
-            if (updateArgs.priority) priorityForMessage = updateArgs.priority;
+            if (updateArgs.serviceCategory || updateArgs.priority) {
+              const refreshed = await viewRequest(requestObj.id);
+              const refreshedCategory = refreshed?.service_category?.name;
+              const refreshedPriority = refreshed?.priority?.name;
+              if (typeof refreshedCategory === 'string' && refreshedCategory.trim().length > 0) {
+                categoryForMessage = refreshedCategory;
+              } else if (updateArgs.serviceCategory) {
+                categoryForMessage = updateArgs.serviceCategory;
+              }
+              if (typeof refreshedPriority === 'string' && refreshedPriority.trim().length > 0) {
+                priorityForMessage = refreshedPriority;
+              } else if (updateArgs.priority) {
+                priorityForMessage = updateArgs.priority;
+              }
+            }
           } else {
             console.warn(`Ticket update (new) failed for ${requestObj.id}: ${updateRes.message}`);
           }
@@ -908,8 +921,19 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       if (updateArgs.serviceCategory || updateArgs.priority) {
         const updateRes = await updateRequest(requestObj.id, updateArgs);
         if (updateRes.success) {
-          if (updateArgs.serviceCategory) categoryForMessage = updateArgs.serviceCategory;
-          if (updateArgs.priority) priorityForMessage = updateArgs.priority;
+          const refreshed = await viewRequest(requestObj.id);
+          const refreshedCategory = refreshed?.service_category?.name;
+          const refreshedPriority = refreshed?.priority?.name;
+          if (typeof refreshedCategory === 'string' && refreshedCategory.trim().length > 0) {
+            categoryForMessage = refreshedCategory;
+          } else if (updateArgs.serviceCategory) {
+            categoryForMessage = updateArgs.serviceCategory;
+          }
+          if (typeof refreshedPriority === 'string' && refreshedPriority.trim().length > 0) {
+            priorityForMessage = refreshedPriority;
+          } else if (updateArgs.priority) {
+            priorityForMessage = updateArgs.priority;
+          }
         } else {
           console.warn(`Ticket update (updated) failed for ${requestObj.id}: ${updateRes.message}`);
         }
