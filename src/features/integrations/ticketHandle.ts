@@ -769,8 +769,25 @@ async function convertPdfToImages(pdfPath: string): Promise<string[]> {
     .filter(Boolean);
 }
 
-const isTestEnvironment = false;
+const isTestEnvironment = true;
 const chatId = isTestEnvironment ? '120363123402010871@g.us' : '120363162455880145@g.us';
+
+const srfApprovalDedup = new Map<string, number>();
+const srfApprovalDedupTtlMs = 10 * 60 * 1000;
+
+function shouldSendSrfApproval(args: { ticketId: string; attachmentContentUrl: string }): boolean {
+  const now = Date.now();
+  for (const [key, expiresAt] of srfApprovalDedup.entries()) {
+    if (expiresAt <= now) srfApprovalDedup.delete(key);
+  }
+
+  const key = `srf:${args.ticketId}:${args.attachmentContentUrl}`;
+  const existing = srfApprovalDedup.get(key);
+  if (existing && existing > now) return false;
+
+  srfApprovalDedup.set(key, now + srfApprovalDedupTtlMs);
+  return true;
+}
 
 async function sendGroupMessage(args: {
   chatId: string;
@@ -868,6 +885,14 @@ export async function handleAndAnalyzeAttachments(requestDetails: ServiceDeskReq
           });
 
           if (!isSrf) return;
+
+          if (!shouldSendSrfApproval({ ticketId: requestDetails.id, attachmentContentUrl: attachment.content_url })) {
+            console.log(
+              `[SRF_DETECTION][ticket:${requestDetails.id}][scope:attachment] duplicateSend=skipped attachment="${attachmentName}"`
+            );
+            analyzedResults.push({ name: attachmentName, analysis: 'Skipped duplicate SRF send' });
+            return;
+          }
 
           const pdfPath = await downloadPdf(downloadUrl, attachmentName);
           const pagesText = await convertPdfToImages(pdfPath);

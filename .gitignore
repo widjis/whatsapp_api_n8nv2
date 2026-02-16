@@ -22,6 +22,7 @@ baileys_store.json
 uploads/
 tmp/
 temp/
+src/features/integrations/temp_pdf_files/
 
 # Local data
 data/technicianContacts.json

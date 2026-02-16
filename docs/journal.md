@@ -511,3 +511,17 @@
   - Deleted sent SRF PDFs after `/send-group-message` succeeds.
 - Impact:
   - Prevents `temp_pdf_files/` from accumulating old PDFs.
+
+## [2026-02-16 11:03:06 +08:00] Ignore and clean up temp_pdf_files and dedupe SRF sends
+- Change:
+  - Ignored `src/features/integrations/temp_pdf_files/` and removed stray PDFs from the repo.
+  - Added an in-memory dedupe guard to avoid sending the same SRF PDF twice.
+- Impact:
+  - Prevents temp PDF artifacts from being tracked.
+  - Avoids duplicate SRF approval messages when ServiceDesk triggers multiple webhooks.
+
+## [2026-02-16 11:17:12 +08:00] Prevent LDAP ECONNRESET from crashing process
+- Change:
+  - Added LDAP client-level error handler to avoid unhandled `error` events.
+- Impact:
+  - LDAP connection resets now fail the current lookup without terminating Node.

@@ -14,10 +14,18 @@ export async function getLdapClient(): Promise<ldap.Client> {
     tlsOptions: { rejectUnauthorized: false, secureProtocol: 'TLSv1_2_method' },
   });
 
+  client.on('error', (err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`LDAP client error: ${message}`);
+  });
+
   await new Promise<void>((resolve, reject) => {
     client.bind(bindDN, bindPW, (err) => {
       if (err) {
-        client.unbind();
+        try {
+          client.unbind();
+        } catch {
+        }
         reject(err);
         return;
       }
