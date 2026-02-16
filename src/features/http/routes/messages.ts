@@ -942,11 +942,30 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       const previousState = await loadPreviousTicketState(requestObj.id);
       const currentTechnician = requestObj.udf_fields?.udf_pick_601;
 
+      let ticketStatusForMessage = ticketStatus;
+      const shouldAutoInProgress =
+        typeof currentTechnician === 'string' &&
+        currentTechnician.trim().length > 0 &&
+        currentTechnician !== 'ICT Helpdesk' &&
+        previousState?.technician !== currentTechnician;
+
+      if (shouldAutoInProgress && ticketStatusForMessage !== 'In Progress') {
+        const updateRes = await updateRequest(requestObj.id, { status: 'In Progress' });
+        if (updateRes.success) {
+          const refreshed = await viewRequest(requestObj.id);
+          const refreshedStatus = refreshed?.status?.name;
+          ticketStatusForMessage =
+            typeof refreshedStatus === 'string' && refreshedStatus.trim().length > 0 ? refreshedStatus : 'In Progress';
+        } else {
+          console.warn(`Ticket status update failed for ${requestObj.id}: ${updateRes.message}`);
+        }
+      }
+
       const changes: string[] = [];
-      if (previousState?.ticketStatus && previousState.ticketStatus !== ticketStatus) {
-        changes.push(`Status: ${previousState.ticketStatus} → ${ticketStatus}`);
+      if (previousState?.ticketStatus && previousState.ticketStatus !== ticketStatusForMessage) {
+        changes.push(`Status: ${previousState.ticketStatus} → ${ticketStatusForMessage}`);
       } else {
-        changes.push(`Status: ${ticketStatus}`);
+        changes.push(`Status: ${ticketStatusForMessage}`);
       }
 
       if (previousState?.priority && previousState.priority !== priority) {
@@ -966,7 +985,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         requesterLabel: createdBy,
         category: categoryForMessage,
         priority: priorityForMessage,
-        status: ticketStatus,
+        status: ticketStatusForMessage,
         subject,
         link: ticketLink,
         changes,
@@ -1004,7 +1023,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
             requesterLabel: createdBy,
             category: categoryForMessage,
             priority: priorityForMessage,
-            status: ticketStatus,
+            status: ticketStatusForMessage,
             subject,
             description: truncatedDescription,
             link: ticketLink,
@@ -1029,7 +1048,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
 
       await saveTicketState(requestObj.id, {
         technician: currentTechnician,
-        ticketStatus,
+        ticketStatus: ticketStatusForMessage,
         priority: priorityForMessage,
       });
 

@@ -546,3 +546,9 @@
   - After applying category/priority normalization updates, re-fetches the request and uses the refreshed values in WhatsApp notifications.
 - Impact:
   - Prevents `Category: N/A` in notifications when the category was just updated.
+
+## [2026-02-16 13:34:15] Auto-set ticket status to In Progress on ICT technician assignment
+- Change:
+  - When `udf_pick_601` (ICT technician) becomes assigned (and is not `ICT Helpdesk`), updates ticket status to `In Progress`.
+- Impact:
+  - Assigned tickets automatically move out of `Open` and reflect active work.
