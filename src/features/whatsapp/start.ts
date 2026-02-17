@@ -2185,6 +2185,9 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
     const currentSock = sock;
     if (!currentSock) return;
 
+    const botJid = currentSock.user?.id;
+    const botDigits = typeof botJid === 'string' ? extractPhoneDigitsFromJid(botJid) : null;
+
     const allowedReactionGroups = parseReactionGroupIds();
 
     for (const msg of payloadUnknown.messages) {
@@ -2192,6 +2195,21 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
       const remoteJid = msg.key?.remoteJid;
       if (!remoteJid) continue;
       if (remoteJid === 'status@broadcast') continue;
+
+      if (typeof botJid === 'string' && botJid.length > 0 && remoteJid === botJid) {
+        console.log('[self-skip]', JSON.stringify({ reason: 'remoteJid_is_bot', remoteJid }));
+        continue;
+      }
+
+      const senderNumber = resolveSenderNumber({ msg, remoteJid, store: deps.store, authInfoDir: deps.authInfoDir });
+      const senderDigits = extractPhoneDigitsFromJid(senderNumber);
+      if (botDigits && senderDigits === botDigits) {
+        console.log(
+          '[self-skip]',
+          JSON.stringify({ reason: 'sender_is_bot', remoteJid, senderNumber, senderDigits })
+        );
+        continue;
+      }
 
       const reactionTarget = extractReactionTargetFromMessage(msg.message);
       if (reactionTarget) {
@@ -2294,7 +2312,6 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
         const shouldLogOnly = !shouldReply && (!isGroup || process.env.LOG_UNTAGGED_GROUPS !== 'false');
         if (!shouldReply && !shouldLogOnly) continue;
 
-        const senderNumber = resolveSenderNumber({ msg, remoteJid, store: deps.store, authInfoDir: deps.authInfoDir });
         const pushName = msg.pushName ?? 'Unknown';
         const buffered = addToMessageBuffer({
           msg,
