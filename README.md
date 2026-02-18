@@ -14,7 +14,6 @@
 - Admin command: `/resetpassword` to update user password in Active Directory.
 - Ticket claim via reaction in configured groups (remove reaction to unclaim).
 - Auto service category suggestion for new tickets from webhook (requires `OPENAI_API_KEY`).
-- Auto-convert new webhook tickets to template 305 (“Submit a New Request”) when needed.
 - Private-chat reply gateway to reduce unwanted auto-replies (supports auto-mute + `/unmute`).
 
 ## Requirements
