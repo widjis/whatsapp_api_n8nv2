@@ -215,6 +215,7 @@ Notes:
 - All inbound messages are parsed and routed:
   - Messages starting with `/` are treated as commands.
   - Other messages are passed to `handleMessage`. If `N8N_WEBHOOK_URL` is set, the payload is sent to N8N and the first textual response is echoed back.
+  - Group messages are only forwarded to N8N when the bot is tagged/mentioned; untagged group messages are ignored (optionally logged only).
 
 Built-in commands:
 - `/hi` – replies "Hello!"

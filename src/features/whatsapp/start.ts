@@ -2309,8 +2309,15 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
       } else {
         const isGroup = remoteJid.endsWith('@g.us');
         const shouldReply = !isGroup || isTaggedInGroup({ sock: currentSock, deps, msg, messageText: messageContent });
-        const shouldLogOnly = !shouldReply && (!isGroup || process.env.LOG_UNTAGGED_GROUPS !== 'false');
-        if (!shouldReply && !shouldLogOnly) continue;
+        const shouldLogOnly = !shouldReply && isGroup && process.env.LOG_UNTAGGED_GROUPS !== 'false';
+        if (!shouldReply) {
+          if (shouldLogOnly) {
+            const pushName = msg.pushName ?? 'Unknown';
+            console.log(`Group Message from ${pushName} (${senderNumber}) in Group ${remoteJid}`);
+            console.log(`Content: ${messageContent}`);
+          }
+          continue;
+        }
 
         const pushName = msg.pushName ?? 'Unknown';
         const buffered = addToMessageBuffer({

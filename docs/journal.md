@@ -328,6 +328,10 @@
 ## [2026-02-17 13:57:04 WITA] Skip processing bot's own messages
 - Change:
   - Added stronger self-message detection in messages.upsert to prevent reply loops.
+
+## [2026-02-21 08:40:58 WIB] Skip untagged group messages for n8n
+- Change:
+  - Untagged group messages are no longer forwarded to n8n (they can be optionally logged only).
   - Added `SERVICE_CATEGORY_AI_ENABLED=false` option to disable category AI.
 
 ## [2026-02-15 16:29:25 WITA] Standardize ticketing WhatsApp notifications
