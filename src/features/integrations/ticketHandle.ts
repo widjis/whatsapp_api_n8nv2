@@ -975,7 +975,7 @@ export async function handleAndAnalyzeAttachments(
           const pdfPath = await downloadPdf(downloadUrl, attachmentName);
           const pagesText = await convertPdfToImages(pdfPath);
 
-          const mentions = isTestEnvironment ? ['6285712612218', '6281130569787'] : ['6282323336511', '6285712612218'];
+          const mentions = isTestEnvironment ? ['6285712612218', '6281130569787'] : ['6282323336511', '6285712612218','6289524548777','6281132041331'];
           const combinedResult = pagesText.join('\n');
 
           const updatedPrompt = `Kamu adalah MTI ICT Helpdesk. Berdasarkan data yang akan saya berikan, kirimkan pesan dengan format:\nPak ${mentions
