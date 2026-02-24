@@ -8,6 +8,7 @@ import {
   Browsers,
   DisconnectReason,
   downloadMediaMessage,
+  fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   makeWASocket,
   useMultiFileAuthState,
@@ -42,7 +43,8 @@ import { claimTicketNotification, loadTicketNotification, unclaimTicketNotificat
 import { updateRequest, viewRequest } from '../integrations/ticketHandle.js';
 
 let sock: WASocket | undefined;
-const mediaLogger = pino({ level: 'fatal' });
+const fatalLogger = pino({ level: 'fatal' });
+const mediaLogger = fatalLogger;
 
 const MESSAGE_BUFFER_ENABLED = process.env.MESSAGE_BUFFER_ENABLED === 'true';
 const MESSAGE_BUFFER_TIMEOUT_MS = Number(process.env.MESSAGE_BUFFER_TIMEOUT ?? '3000');
@@ -53,6 +55,49 @@ const PRESENCE_SUBSCRIPTION_ENABLED = process.env.PRESENCE_SUBSCRIPTION_ENABLED 
 const DEBUG_TICKET_REACTIONS = process.env.DEBUG_TICKET_REACTIONS === 'true';
 
 type MediaSendMode = 'base64' | 'file_url' | 'auto';
+
+type WaVersion = [number, number, number];
+
+function parseWaVersionEnv(raw: string | undefined): WaVersion | null {
+  if (!raw) return null;
+  const cleaned = raw.trim();
+  if (!cleaned) return null;
+  const parts = cleaned.split(/[,\s]+/).filter(Boolean);
+  if (parts.length !== 3) return null;
+  const nums = parts.map((p) => Number(p));
+  if (!nums.every((n) => Number.isInteger(n) && n > 0)) return null;
+  return [nums[0], nums[1], nums[2]];
+}
+
+function isReadableStream(value: unknown): value is NodeJS.ReadableStream {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as { pipe?: unknown; on?: unknown };
+  return typeof v.pipe === 'function' && typeof v.on === 'function';
+}
+
+async function toBufferFromDownloadedMedia(downloaded: unknown): Promise<Buffer> {
+  if (Buffer.isBuffer(downloaded)) return downloaded;
+  if (downloaded instanceof Uint8Array) return Buffer.from(downloaded);
+  if (isReadableStream(downloaded)) {
+    const chunks: Buffer[] = [];
+    for await (const chunkUnknown of downloaded as AsyncIterable<unknown>) {
+      if (Buffer.isBuffer(chunkUnknown)) {
+        chunks.push(chunkUnknown);
+        continue;
+      }
+      if (chunkUnknown instanceof Uint8Array) {
+        chunks.push(Buffer.from(chunkUnknown));
+        continue;
+      }
+      if (typeof chunkUnknown === 'string') {
+        chunks.push(Buffer.from(chunkUnknown));
+        continue;
+      }
+    }
+    return Buffer.concat(chunks);
+  }
+  throw new Error('Unsupported media download type');
+}
 
 function readMediaSendMode(): MediaSendMode {
   const raw = process.env.N8N_MEDIA_SEND_MODE;
@@ -1250,8 +1295,7 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
           logger: mediaLogger,
           reuploadRequest: args.sock.updateMediaMessage,
         });
-        const buffer = Buffer.isBuffer(downloaded) ? downloaded : Buffer.from(downloaded as Uint8Array);
-        return buffer;
+        return await toBufferFromDownloadedMedia(downloaded);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error('Error downloading quoted media:', message);
@@ -1409,8 +1453,7 @@ async function parseIncomingMessage(args: { sock: WASocket; msg: proto.IWebMessa
         logger: mediaLogger,
         reuploadRequest: args.sock.updateMediaMessage,
       });
-      const buffer = Buffer.isBuffer(downloaded) ? downloaded : Buffer.from(downloaded as Uint8Array);
-      return buffer;
+      return await toBufferFromDownloadedMedia(downloaded);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('Error downloading media:', message);
@@ -2116,13 +2159,28 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
   presenceStatus.clear();
   const { state, saveCreds } = await useMultiFileAuthState(deps.authInfoDir);
 
+  const versionFromEnv = parseWaVersionEnv(process.env.WA_VERSION);
+  let waVersion: WaVersion | undefined = versionFromEnv ?? undefined;
+  if (!waVersion) {
+    try {
+      const latest = await fetchLatestBaileysVersion();
+      const v = latest?.version;
+      if (Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === 'number')) {
+        waVersion = [v[0], v[1], v[2]];
+      }
+    } catch {
+      waVersion = [2, 2413, 1];
+    }
+  }
+
   sock = makeWASocket({
     auth: {
       creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
+      keys: makeCacheableSignalKeyStore(state.keys, fatalLogger),
     },
+    version: waVersion,
     printQRInTerminal: true,
-    logger: pino({ level: 'fatal' }),
+    logger: fatalLogger,
     browser: Browsers.macOS('Desktop'),
   });
 

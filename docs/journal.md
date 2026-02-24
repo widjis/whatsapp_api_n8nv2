@@ -267,3 +267,14 @@
 ## [2026-02-15 14:23:12 WITA] Improve /getbitlocker message formatting
 - Change:
   - Reformatted `/getbitlocker` WhatsApp output with clearer headings and key sections.
+
+## [2026-02-24 12:37:03 WIB] Stabilize Baileys connection versioning
+- Change:
+  - Pinned `@whiskeysockets/baileys` to `6.6.0` (was `latest`).
+  - Pinned `pino` to `^7.0.0` to match Baileys logger types.
+  - Added optional `WA_VERSION` env override and safe fallback versioning in WhatsApp startup.
+  - Normalized `downloadMediaMessage` results to Buffer for stream/Uint8Array returns.
+- Reason:
+  - Prevent recurring `405 Method Not Allowed` and type mismatches from shifting `latest` dependency updates.
+- Impact:
+  - Startup becomes deterministic across environments; `WA_VERSION` can be tuned without code changes.
