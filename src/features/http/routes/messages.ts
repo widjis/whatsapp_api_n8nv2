@@ -529,6 +529,78 @@ function normalizeReceiverJid(receiver: string): string {
   return phoneNumberFormatter(trimmed);
 }
 
+type ReceiverMeta = {
+  isGroup: boolean;
+  groupAnnounce: boolean | null;
+  botInGroup: boolean | null;
+  botIsAdmin: boolean | null;
+};
+
+function normalizeDeviceJid(jid: string): string {
+  const at = jid.indexOf('@');
+  if (at < 0) return jid;
+  const user = jid.slice(0, at);
+  const domain = jid.slice(at + 1);
+  const baseUser = user.includes(':') ? (user.split(':')[0] ?? user) : user;
+  return `${baseUser}@${domain}`;
+}
+
+async function precheckGroupSend(args: {
+  sock: WASocket;
+  receiverJid: string;
+}): Promise<{ receiverMeta: ReceiverMeta; blockError: string | null }> {
+  const receiverJid = args.receiverJid;
+  const isGroup = receiverJid.endsWith('@g.us');
+  const receiverMetaBase: ReceiverMeta = { isGroup, groupAnnounce: null, botInGroup: null, botIsAdmin: null };
+  if (!isGroup) return { receiverMeta: receiverMetaBase, blockError: null };
+
+  const groupMetadataFn: unknown = (args.sock as unknown as { groupMetadata?: unknown }).groupMetadata;
+  if (typeof groupMetadataFn !== 'function') return { receiverMeta: receiverMetaBase, blockError: null };
+
+  let metaUnknown: unknown;
+  try {
+    metaUnknown = await (groupMetadataFn as (jid: string) => Promise<unknown>)(receiverJid);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Group metadata lookup failed: ${JSON.stringify({ receiverJid, message })}`);
+    return { receiverMeta: receiverMetaBase, blockError: null };
+  }
+
+  if (!metaUnknown || typeof metaUnknown !== 'object') return { receiverMeta: receiverMetaBase, blockError: null };
+  const metaRecord = metaUnknown as Record<string, unknown>;
+  const groupAnnounce = typeof metaRecord.announce === 'boolean' ? metaRecord.announce : null;
+
+  const botUserJidRaw = args.sock.user?.id;
+  const botUserJid = typeof botUserJidRaw === 'string' ? normalizeDeviceJid(botUserJidRaw) : null;
+
+  const participantsUnknown = metaRecord.participants;
+  const participants = Array.isArray(participantsUnknown) ? participantsUnknown : null;
+  if (!botUserJid || !participants) {
+    return { receiverMeta: { ...receiverMetaBase, groupAnnounce }, blockError: null };
+  }
+
+  const botParticipant = participants.find((p) => {
+    if (!p || typeof p !== 'object') return false;
+    const id = (p as Record<string, unknown>).id;
+    if (typeof id !== 'string') return false;
+    return normalizeDeviceJid(id) === botUserJid;
+  });
+
+  const botInGroup = Boolean(botParticipant);
+  let botIsAdmin: boolean | null = null;
+  if (botParticipant && typeof botParticipant === 'object') {
+    const admin = (botParticipant as Record<string, unknown>).admin;
+    botIsAdmin = typeof admin === 'string' ? admin === 'admin' || admin === 'superadmin' : false;
+  }
+
+  const receiverMeta: ReceiverMeta = { ...receiverMetaBase, groupAnnounce, botInGroup, botIsAdmin };
+  if (groupAnnounce === true && botIsAdmin === false) {
+    return { receiverMeta, blockError: 'group-admin-only' };
+  }
+
+  return { receiverMeta, blockError: null };
+}
+
 function resolveDocumentMimeType(file: UploadedFile): string {
   if (file.originalname.toLowerCase().endsWith('.xlsx')) {
     return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -869,6 +941,11 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
 
         let receiverSent = false;
         let receiverError: string | null = null;
+        const precheck = await precheckGroupSend({ sock, receiverJid });
+        const receiverMeta = precheck.receiverMeta;
+        if (precheck.blockError) {
+          receiverError = precheck.blockError;
+        } else {
         try {
           const sentUnknown: unknown = await sock.sendMessage(receiverJid, { text: msgReceiver });
           receiverSent = true;
@@ -886,6 +963,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
           if (receiverError === 'not-acceptable') {
             console.error(`Receiver notify (new) not-acceptable. Check bot membership/access for ${receiverJid}`);
           }
+        }
         }
 
         const notifyRequesterNew = shouldNotifyWebhook(payload.notify_requester_new, true);
@@ -928,7 +1006,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
           priority: priorityForMessage,
         });
 
-        res.status(200).json({ message: 'Webhook processed', receiverSent, receiverError });
+        res.status(200).json({ message: 'Webhook processed', receiverSent, receiverError, receiverMeta });
         return;
       }
 
@@ -1025,6 +1103,11 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       });
       let receiverSent = false;
       let receiverError: string | null = null;
+      const precheck = await precheckGroupSend({ sock, receiverJid });
+      const receiverMeta = precheck.receiverMeta;
+      if (precheck.blockError) {
+        receiverError = precheck.blockError;
+      } else {
       try {
         await sock.sendMessage(receiverJid, { text: msgReceiverUpdate });
         receiverSent = true;
@@ -1036,6 +1119,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         if (receiverError === 'not-acceptable') {
           console.error(`Receiver notify (updated) not-acceptable. Check bot membership/access for ${receiverJid}`);
         }
+      }
       }
 
       if (shouldNotify(payload.notify_requester_update)) {
@@ -1128,7 +1212,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         priority: priorityForMessage,
       });
 
-      res.status(200).json({ message: 'Webhook processed', receiverSent, receiverError });
+      res.status(200).json({ message: 'Webhook processed', receiverSent, receiverError, receiverMeta });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;

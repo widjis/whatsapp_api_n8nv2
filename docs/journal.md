@@ -302,3 +302,8 @@
 ## [2026-02-25 09:11:21 WIB] Return 200 even if WhatsApp sendMessage fails
 - Change:
   - Made `/webhook` return 200 with `receiverSent`/`receiverError` when Baileys sendMessage fails (e.g. `not-acceptable`).
+
+## [2026-02-25 13:39:54 WIB] Add group precheck for admin-only posting before webhook send
+- Change:
+  - Added a group metadata precheck to detect admin-only groups and return `group-admin-only` instead of Baileys `not-acceptable`.
+  - Added `receiverMeta` fields to `/webhook` response for easier troubleshooting.
