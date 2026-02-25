@@ -544,6 +544,54 @@ function getJidUserPart(jid: string): string {
   return base.trim().toLowerCase();
 }
 
+function extractBaileysErrorDetails(error: unknown): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    message: error instanceof Error ? error.message : String(error),
+  };
+
+  if (!error || typeof error !== 'object') return base;
+  const e = error as Record<string, unknown>;
+
+  const name = typeof e.name === 'string' ? e.name : null;
+  if (name) base.name = name;
+  const code = typeof e.code === 'string' || typeof e.code === 'number' ? e.code : null;
+  if (code !== null) base.code = code;
+
+  const isBoom = typeof e.isBoom === 'boolean' ? e.isBoom : null;
+  if (isBoom !== null) base.isBoom = isBoom;
+
+  const output = e.output;
+  if (output && typeof output === 'object') {
+    const out = output as Record<string, unknown>;
+    const statusCode = typeof out.statusCode === 'number' ? out.statusCode : null;
+    if (statusCode !== null) base.statusCode = statusCode;
+    const payload = out.payload;
+    if (payload && typeof payload === 'object') {
+      const p = payload as Record<string, unknown>;
+      const errorLabel = typeof p.error === 'string' ? p.error : null;
+      const messageLabel = typeof p.message === 'string' ? p.message : null;
+      if (errorLabel) base.outputError = errorLabel;
+      if (messageLabel) base.outputMessage = messageLabel;
+    }
+  }
+
+  const data = e.data;
+  if (data && typeof data === 'object') {
+    const d = data as Record<string, unknown>;
+    const tag = typeof d.tag === 'string' ? d.tag : null;
+    const attrs = d.attrs && typeof d.attrs === 'object' ? (d.attrs as Record<string, unknown>) : null;
+    if (tag) base.tag = tag;
+    if (attrs) {
+      const codeAttr = typeof attrs.code === 'string' ? attrs.code : null;
+      const text = typeof attrs.text === 'string' ? attrs.text : null;
+      if (codeAttr) base.waCode = codeAttr;
+      if (text) base.waText = text;
+    }
+  }
+
+  return base;
+}
+
 async function precheckGroupSend(args: {
   sock: WASocket;
   receiverJid: string;
@@ -966,11 +1014,12 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
           }
         } catch (error) {
           receiverError = error instanceof Error ? error.message : String(error);
-          console.error(
-            `Receiver notify (new) failed for ${requestObj.id}: ${JSON.stringify({ receiverJid, receiverError })}`
-          );
+          const errorDetails = extractBaileysErrorDetails(error);
+          console.error(`Receiver notify (new) failed for ${requestObj.id}: ${JSON.stringify({ receiverJid, errorDetails })}`);
           if (receiverError === 'not-acceptable') {
-            console.error(`Receiver notify (new) not-acceptable. Check bot membership/access for ${receiverJid}`);
+            console.error(
+              `Receiver notify (new) not-acceptable for ${requestObj.id}: ${JSON.stringify({ receiverJid, receiverMeta })}`
+            );
           }
         }
         }
@@ -1122,11 +1171,14 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         receiverSent = true;
       } catch (error) {
         receiverError = error instanceof Error ? error.message : String(error);
+        const errorDetails = extractBaileysErrorDetails(error);
         console.error(
-          `Receiver notify (updated) failed for ${requestObj.id}: ${JSON.stringify({ receiverJid, receiverError })}`
+          `Receiver notify (updated) failed for ${requestObj.id}: ${JSON.stringify({ receiverJid, errorDetails })}`
         );
         if (receiverError === 'not-acceptable') {
-          console.error(`Receiver notify (updated) not-acceptable. Check bot membership/access for ${receiverJid}`);
+          console.error(
+            `Receiver notify (updated) not-acceptable for ${requestObj.id}: ${JSON.stringify({ receiverJid, receiverMeta })}`
+          );
         }
       }
       }
