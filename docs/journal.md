@@ -278,3 +278,23 @@
   - Prevent recurring `405 Method Not Allowed` and type mismatches from shifting `latest` dependency updates.
 - Impact:
   - Startup becomes deterministic across environments; `WA_VERSION` can be tuned without code changes.
+
+## [2026-02-25 08:15:44 WIB] Add /webhook test utility
+- Change:
+  - Added `src/webhookTest.ts` and `npm run webhook:test` to POST a webhook payload.
+- Reason:
+  - Make it easy to verify `/webhook` end-to-end from local/dev environments.
+- Impact:
+  - Requires a real ServiceDesk ticket ID (`--id`) and a receiver JID/phone (`--receiver`) to exercise the route.
+
+## [2026-02-25 08:28:59 WIB] Prevent /webhook 500 from optional LDAP and notification failures
+- Change:
+  - Made requester mobile lookup by email return null when LDAP is unavailable/misconfigured.
+  - Made requester/technician WhatsApp notifications best-effort to avoid failing the whole webhook.
+- Impact:
+  - `/webhook` continues sending the main receiver notification even if LDAP or optional notifications fail.
+
+## [2026-02-25 09:06:08 WIB] Add requestId and safe reason to /webhook 500 response
+- Change:
+  - Included a requestId in `/webhook` 500 responses and logged stack traces server-side.
+  - Returned a safe reason when the error is a missing env var message.

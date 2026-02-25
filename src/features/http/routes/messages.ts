@@ -791,8 +791,13 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       const truncatedDescription = await truncateDescription({ text: descriptionPlain, maxChars: 200 });
       const ticketLink = buildTicketLink(requestObj.id);
 
-      const requesterMobile = await resolveRequesterMobile(requestObj);
-      const requesterJid = requesterMobile ? phoneNumberFormatter(requesterMobile) : null;
+      let requesterJidCached: string | null | undefined;
+      const ensureRequesterJid = async (): Promise<string | null> => {
+        if (requesterJidCached !== undefined) return requesterJidCached;
+        const requesterMobile = await resolveRequesterMobile(requestObj);
+        requesterJidCached = requesterMobile ? phoneNumberFormatter(requesterMobile) : null;
+        return requesterJidCached;
+      };
 
       if (payload.status === 'new') {
         let categoryForMessage = category;
@@ -871,22 +876,37 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         }
 
         const notifyRequesterNew = shouldNotifyWebhook(payload.notify_requester_new, true);
-        if (requesterJid && notifyRequesterNew) {
-          const msgRequester = renderRequesterTicketCreatedMessage({
-            requesterLabel: createdBy,
-            ticketId: requestObj.id,
-            status: ticketStatus,
-            priority: priorityForMessage,
-            category: categoryForMessage,
-            subject,
-            description: truncatedDescription,
-            link: ticketLink,
-          });
-          await sock.sendMessage(requesterJid, { text: msgRequester });
+        if (notifyRequesterNew) {
+          const requesterJid = await ensureRequesterJid();
+          if (!requesterJid) {
+            console.warn(`Requester notify (new) skipped for ${requestObj.id}: requester JID not resolved`);
+          } else {
+            const msgRequester = renderRequesterTicketCreatedMessage({
+              requesterLabel: createdBy,
+              ticketId: requestObj.id,
+              status: ticketStatus,
+              priority: priorityForMessage,
+              category: categoryForMessage,
+              subject,
+              description: truncatedDescription,
+              link: ticketLink,
+            });
+            try {
+              await sock.sendMessage(requesterJid, { text: msgRequester });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              console.error(`Requester notify (new) failed for ${requestObj.id}: ${message}`);
+            }
+          }
         }
 
         if ((requestObj.attachments?.length ?? 0) > 0) {
-          await handleAndAnalyzeAttachments(requestObj, { allowSrfApproval: true });
+          try {
+            await handleAndAnalyzeAttachments(requestObj, { allowSrfApproval: true });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`Attachment handling failed for ${requestObj.id}: ${message}`);
+          }
         }
 
         await saveTicketState(requestObj.id, {
@@ -992,14 +1012,24 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       });
       await sock.sendMessage(receiverJid, { text: msgReceiverUpdate });
 
-      if (requesterJid && shouldNotify(payload.notify_requester_update)) {
+      if (shouldNotify(payload.notify_requester_update)) {
+        const requesterJid = await ensureRequesterJid();
+        if (!requesterJid) {
+          console.warn(`Requester notify (updated) skipped for ${requestObj.id}: requester JID not resolved`);
+        } else {
         const msgRequesterUpdate = renderRequesterTicketUpdatedMessage({
           requesterLabel: createdBy,
           ticketId: requestObj.id,
           link: ticketLink,
           changes,
         });
-        await sock.sendMessage(requesterJid, { text: msgRequesterUpdate });
+          try {
+            await sock.sendMessage(requesterJid, { text: msgRequesterUpdate });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`Requester notify (updated) failed for ${requestObj.id}: ${message}`);
+          }
+        }
       }
 
       if (
@@ -1028,22 +1058,42 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
             description: truncatedDescription,
             link: ticketLink,
           });
-          await sock.sendMessage(technicianJid, { text: msgTechnician });
+          try {
+            await sock.sendMessage(technicianJid, { text: msgTechnician });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`Technician notify failed for ${requestObj.id}: ${message}`);
+          }
 
-          if (requesterJid && shouldNotify(payload.notify_requester_assign)) {
+          if (shouldNotify(payload.notify_requester_assign)) {
+            const requesterJid = await ensureRequesterJid();
+            if (!requesterJid) {
+              console.warn(`Requester notify (assign) skipped for ${requestObj.id}: requester JID not resolved`);
+            } else {
             const msgRequesterAssign = renderRequesterTicketAssignedMessage({
               requesterLabel: createdBy,
               ticketId: requestObj.id,
               assigneeName: technicianContact.name,
               link: ticketLink,
             });
-            await sock.sendMessage(requesterJid, { text: msgRequesterAssign });
+              try {
+                await sock.sendMessage(requesterJid, { text: msgRequesterAssign });
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                console.error(`Requester notify (assign) failed for ${requestObj.id}: ${message}`);
+              }
+            }
           }
         }
       }
 
       if ((requestObj.attachments?.length ?? 0) > 0) {
-        await handleAndAnalyzeAttachments(requestObj, { allowSrfApproval: false });
+        try {
+          await handleAndAnalyzeAttachments(requestObj, { allowSrfApproval: false });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Attachment handling failed for ${requestObj.id}: ${message}`);
+        }
       }
 
       await saveTicketState(requestObj.id, {
@@ -1055,8 +1105,13 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       res.status(200).json({ message: 'Notification sent successfully' });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error('Error processing webhook:', message);
-      res.status(500).json({ error: 'Failed to process webhook' });
+      const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      console.error('Error processing webhook:', JSON.stringify({ requestId, message }));
+      if (error instanceof Error && error.stack) console.error(error.stack);
+
+      const safeReason =
+        typeof message === 'string' && message.trim().endsWith('must be set in environment') ? message.trim() : undefined;
+      res.status(500).json({ error: 'Failed to process webhook', requestId, reason: safeReason });
     }
   });
 }

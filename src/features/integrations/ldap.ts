@@ -79,7 +79,12 @@ export async function findUserMobileByEmail(args: { email: string }): Promise<st
   const baseDn = process.env.BASE_DN ?? process.env.LDAP_BASE_DN ?? process.env.BASE_OU ?? '';
   if (!baseDn) return null;
 
-  const client = await getLdapClient();
+  let client: ldap.Client;
+  try {
+    client = await getLdapClient();
+  } catch {
+    return null;
+  }
   const escaped = escapeLdapFilterValue(email);
   const filter = `(&(mail=${escaped}))`;
 

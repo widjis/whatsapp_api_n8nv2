@@ -10,6 +10,7 @@
     "dev": "tsx watch src/index.ts",
     "qontak": "node dist/qontak.js",
     "qontak:dev": "tsx src/qontak.ts",
+    "webhook:test": "tsx src/webhookTest.ts",
     "lint": "npx tsc --noEmit"
   },
   "dependencies": {
