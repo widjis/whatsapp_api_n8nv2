@@ -867,12 +867,25 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
           link: ticketLink,
         });
 
-        const sentUnknown: unknown = await sock.sendMessage(receiverJid, { text: msgReceiver });
-        const sent = sentUnknown as { key?: { id?: unknown; remoteJid?: unknown } };
-        const messageId = typeof sent.key?.id === 'string' ? sent.key.id : undefined;
-        const remoteJid = typeof sent.key?.remoteJid === 'string' ? sent.key.remoteJid : receiverJid;
-        if (messageId) {
-          await storeTicketNotification({ ticketId: requestObj.id, remoteJid, messageId });
+        let receiverSent = false;
+        let receiverError: string | null = null;
+        try {
+          const sentUnknown: unknown = await sock.sendMessage(receiverJid, { text: msgReceiver });
+          receiverSent = true;
+          const sent = sentUnknown as { key?: { id?: unknown; remoteJid?: unknown } };
+          const messageId = typeof sent.key?.id === 'string' ? sent.key.id : undefined;
+          const remoteJid = typeof sent.key?.remoteJid === 'string' ? sent.key.remoteJid : receiverJid;
+          if (messageId) {
+            await storeTicketNotification({ ticketId: requestObj.id, remoteJid, messageId });
+          }
+        } catch (error) {
+          receiverError = error instanceof Error ? error.message : String(error);
+          console.error(
+            `Receiver notify (new) failed for ${requestObj.id}: ${JSON.stringify({ receiverJid, receiverError })}`
+          );
+          if (receiverError === 'not-acceptable') {
+            console.error(`Receiver notify (new) not-acceptable. Check bot membership/access for ${receiverJid}`);
+          }
         }
 
         const notifyRequesterNew = shouldNotifyWebhook(payload.notify_requester_new, true);
@@ -915,7 +928,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
           priority: priorityForMessage,
         });
 
-        res.status(200).json({ message: 'Notification sent successfully' });
+        res.status(200).json({ message: 'Webhook processed', receiverSent, receiverError });
         return;
       }
 
@@ -1010,19 +1023,32 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         link: ticketLink,
         changes,
       });
-      await sock.sendMessage(receiverJid, { text: msgReceiverUpdate });
+      let receiverSent = false;
+      let receiverError: string | null = null;
+      try {
+        await sock.sendMessage(receiverJid, { text: msgReceiverUpdate });
+        receiverSent = true;
+      } catch (error) {
+        receiverError = error instanceof Error ? error.message : String(error);
+        console.error(
+          `Receiver notify (updated) failed for ${requestObj.id}: ${JSON.stringify({ receiverJid, receiverError })}`
+        );
+        if (receiverError === 'not-acceptable') {
+          console.error(`Receiver notify (updated) not-acceptable. Check bot membership/access for ${receiverJid}`);
+        }
+      }
 
       if (shouldNotify(payload.notify_requester_update)) {
         const requesterJid = await ensureRequesterJid();
         if (!requesterJid) {
           console.warn(`Requester notify (updated) skipped for ${requestObj.id}: requester JID not resolved`);
         } else {
-        const msgRequesterUpdate = renderRequesterTicketUpdatedMessage({
-          requesterLabel: createdBy,
-          ticketId: requestObj.id,
-          link: ticketLink,
-          changes,
-        });
+          const msgRequesterUpdate = renderRequesterTicketUpdatedMessage({
+            requesterLabel: createdBy,
+            ticketId: requestObj.id,
+            link: ticketLink,
+            changes,
+          });
           try {
             await sock.sendMessage(requesterJid, { text: msgRequesterUpdate });
           } catch (error) {
@@ -1070,12 +1096,12 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
             if (!requesterJid) {
               console.warn(`Requester notify (assign) skipped for ${requestObj.id}: requester JID not resolved`);
             } else {
-            const msgRequesterAssign = renderRequesterTicketAssignedMessage({
-              requesterLabel: createdBy,
-              ticketId: requestObj.id,
-              assigneeName: technicianContact.name,
-              link: ticketLink,
-            });
+              const msgRequesterAssign = renderRequesterTicketAssignedMessage({
+                requesterLabel: createdBy,
+                ticketId: requestObj.id,
+                assigneeName: technicianContact.name,
+                link: ticketLink,
+              });
               try {
                 await sock.sendMessage(requesterJid, { text: msgRequesterAssign });
               } catch (error) {
@@ -1102,7 +1128,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         priority: priorityForMessage,
       });
 
-      res.status(200).json({ message: 'Notification sent successfully' });
+      res.status(200).json({ message: 'Webhook processed', receiverSent, receiverError });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;

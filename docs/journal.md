@@ -298,3 +298,7 @@
 - Change:
   - Included a requestId in `/webhook` 500 responses and logged stack traces server-side.
   - Returned a safe reason when the error is a missing env var message.
+
+## [2026-02-25 09:11:21 WIB] Return 200 even if WhatsApp sendMessage fails
+- Change:
+  - Made `/webhook` return 200 with `receiverSent`/`receiverError` when Baileys sendMessage fails (e.g. `not-acceptable`).
