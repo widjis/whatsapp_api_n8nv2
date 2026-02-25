@@ -651,10 +651,6 @@ async function precheckGroupSend(args: {
   }
 
   const receiverMeta: ReceiverMeta = { ...receiverMetaBase, groupAnnounce, botInGroup, botIsAdmin };
-  if (groupAnnounce === true && botIsAdmin === false) {
-    return { receiverMeta, blockError: 'group-admin-only' };
-  }
-
   return { receiverMeta, blockError: null };
 }
 
