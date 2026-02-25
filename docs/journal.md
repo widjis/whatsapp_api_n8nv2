@@ -315,3 +315,7 @@
 ## [2026-02-25 14:02:28 WIB] Log structured Baileys error details for webhook sends
 - Change:
   - Logged structured error details from Baileys send failures to help diagnose `not-acceptable`.
+
+## [2026-02-25 14:21:58 WIB] Remove admin-only blocking from webhook group precheck
+- Change:
+  - Removed `group-admin-only` blocking logic; webhook always attempts send and reports actual Baileys result.
