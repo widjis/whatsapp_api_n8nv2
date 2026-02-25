@@ -534,15 +534,14 @@ type ReceiverMeta = {
   groupAnnounce: boolean | null;
   botInGroup: boolean | null;
   botIsAdmin: boolean | null;
+  botUserId: string | null;
 };
 
-function normalizeDeviceJid(jid: string): string {
+function getJidUserPart(jid: string): string {
   const at = jid.indexOf('@');
-  if (at < 0) return jid;
-  const user = jid.slice(0, at);
-  const domain = jid.slice(at + 1);
-  const baseUser = user.includes(':') ? (user.split(':')[0] ?? user) : user;
-  return `${baseUser}@${domain}`;
+  const left = at < 0 ? jid : jid.slice(0, at);
+  const base = left.includes(':') ? (left.split(':')[0] ?? left) : left;
+  return base.trim().toLowerCase();
 }
 
 async function precheckGroupSend(args: {
@@ -551,7 +550,9 @@ async function precheckGroupSend(args: {
 }): Promise<{ receiverMeta: ReceiverMeta; blockError: string | null }> {
   const receiverJid = args.receiverJid;
   const isGroup = receiverJid.endsWith('@g.us');
-  const receiverMetaBase: ReceiverMeta = { isGroup, groupAnnounce: null, botInGroup: null, botIsAdmin: null };
+  const botUserJidRaw = args.sock.user?.id;
+  const botUserId = typeof botUserJidRaw === 'string' ? botUserJidRaw : null;
+  const receiverMetaBase: ReceiverMeta = { isGroup, groupAnnounce: null, botInGroup: null, botIsAdmin: null, botUserId };
   if (!isGroup) return { receiverMeta: receiverMetaBase, blockError: null };
 
   const groupMetadataFn: unknown = (args.sock as unknown as { groupMetadata?: unknown }).groupMetadata;
@@ -570,12 +571,19 @@ async function precheckGroupSend(args: {
   const metaRecord = metaUnknown as Record<string, unknown>;
   const groupAnnounce = typeof metaRecord.announce === 'boolean' ? metaRecord.announce : null;
 
-  const botUserJidRaw = args.sock.user?.id;
-  const botUserJid = typeof botUserJidRaw === 'string' ? normalizeDeviceJid(botUserJidRaw) : null;
-
   const participantsUnknown = metaRecord.participants;
   const participants = Array.isArray(participantsUnknown) ? participantsUnknown : null;
-  if (!botUserJid || !participants) {
+  const botUserPartCandidates: string[] = [];
+  if (botUserId) botUserPartCandidates.push(getJidUserPart(botUserId));
+  const sockUserRecord =
+    args.sock.user && typeof args.sock.user === 'object' ? (args.sock.user as unknown as Record<string, unknown>) : null;
+  const lid = sockUserRecord && typeof sockUserRecord.lid === 'string' ? sockUserRecord.lid : null;
+  const jid = sockUserRecord && typeof sockUserRecord.jid === 'string' ? sockUserRecord.jid : null;
+  if (lid) botUserPartCandidates.push(getJidUserPart(lid));
+  if (jid) botUserPartCandidates.push(getJidUserPart(jid));
+  const uniqueBotParts = Array.from(new Set(botUserPartCandidates)).filter((p) => p.length > 0);
+
+  if (uniqueBotParts.length === 0 || !participants) {
     return { receiverMeta: { ...receiverMetaBase, groupAnnounce }, blockError: null };
   }
 
@@ -583,7 +591,8 @@ async function precheckGroupSend(args: {
     if (!p || typeof p !== 'object') return false;
     const id = (p as Record<string, unknown>).id;
     if (typeof id !== 'string') return false;
-    return normalizeDeviceJid(id) === botUserJid;
+    const part = getJidUserPart(id);
+    return uniqueBotParts.includes(part);
   });
 
   const botInGroup = Boolean(botParticipant);
