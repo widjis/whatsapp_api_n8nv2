@@ -319,3 +319,7 @@
 ## [2026-02-25 14:21:58 WIB] Remove admin-only blocking from webhook group precheck
 - Change:
   - Removed `group-admin-only` blocking logic; webhook always attempts send and reports actual Baileys result.
+
+## [2026-02-25 14:49:11 WIB] Upgrade Baileys to latest
+- Change:
+  - Upgraded `@whiskeysockets/baileys` to `7.0.0-rc.9` and updated lockfile.
