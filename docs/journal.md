@@ -322,3 +322,18 @@
 ## [2026-03-03 20:13:57 WITA] Add dispatcher heartbeat logs for scheduling
 - Change:
   - Logs next scheduled scan time based on DISPATCHER_SCAN_INTERVAL_SECONDS.
+
+## [2026-03-03 20:24:41 WITA] Document dispatcher environment variables
+- Change:
+  - Added docs/dispatcher_setup.md to explain dispatcher .env settings.
+
+## [2026-03-03 20:34:59 WITA] Make AI routing fallback visible in reasons
+- Change:
+  - AI response parsing accepts JSON embedded in text/code blocks.
+  - When AI falls back, reason includes ai_fallback:<cause>|<heuristic>.
+  - Dispatcher logs include aiKeyPresent for easier production debugging.
+
+## [2026-03-03 20:38:18 WITA] Document technician exclusion and AI troubleshooting
+- Change:
+  - Added DISPATCHER_ICT_EXCLUDE / DISPATCHER_ICT_MAX_OPEN / DISPATCHER_ICT_WEIGHTS docs.
+  - Added Docker AI troubleshooting section to dispatcher setup docs.

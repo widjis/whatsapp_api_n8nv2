@@ -588,11 +588,20 @@ function safeParseAiRouteDecision(raw: string): AiRouteDecision | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
 
+  const tryParse = (input: string): unknown => JSON.parse(input);
+
   let parsed: unknown;
   try {
-    parsed = JSON.parse(trimmed);
+    parsed = tryParse(trimmed);
   } catch {
-    return null;
+    const start = trimmed.indexOf('{');
+    const end = trimmed.lastIndexOf('}');
+    if (start === -1 || end === -1 || end <= start) return null;
+    try {
+      parsed = tryParse(trimmed.slice(start, end + 1));
+    } catch {
+      return null;
+    }
   }
   if (!parsed || typeof parsed !== 'object') return null;
   const r = parsed as Record<string, unknown>;
@@ -617,8 +626,13 @@ function mapRouteKeyToGroup(config: DispatcherConfig, routeKey: RouteDecision['r
 }
 
 async function routeTicket(config: DispatcherConfig, requestObj: ServiceDeskRequest): Promise<RouteDecision> {
+  const heuristicWithFallback = (fallback: string): RouteDecision => {
+    const h = routeTicketHeuristic(config, requestObj);
+    return { ...h, reason: `ai_fallback:${fallback}|${h.reason}` };
+  };
+
   if (!config.aiRoutingEnabled) return routeTicketHeuristic(config, requestObj);
-  if (!getOptionalEnv('OPENAI_API_KEY')) return routeTicketHeuristic(config, requestObj);
+  if (!getOptionalEnv('OPENAI_API_KEY')) return heuristicWithFallback('missing_key');
 
   const subject = normalizeText(requestObj.subject);
   const desc = normalizeText(requestObj.description);
@@ -660,15 +674,17 @@ async function routeTicket(config: DispatcherConfig, requestObj: ServiceDeskRequ
     });
     const content = chatCompletion.choices[0]?.message?.content ?? '';
     const ai = safeParseAiRouteDecision(content);
-    if (!ai) return routeTicketHeuristic(config, requestObj);
-    if (ai.confidence < config.aiRoutingConfidenceThreshold) return routeTicketHeuristic(config, requestObj);
+    if (!ai) return heuristicWithFallback('parse_fail');
+    if (ai.confidence < config.aiRoutingConfidenceThreshold) {
+      return heuristicWithFallback(`low_conf(${Math.round(ai.confidence * 100) / 100})`);
+    }
     return {
       routeKey: ai.routeKey,
       targetGroupName: mapRouteKeyToGroup(config, ai.routeKey),
       reason: `ai:${ai.reason}`,
     };
   } catch {
-    return routeTicketHeuristic(config, requestObj);
+    return heuristicWithFallback('exception');
   }
 }
 
@@ -1360,6 +1376,7 @@ export function startHelpdeskDispatcher(): { stop: () => void } {
             notifyMode: config.notifyMode,
             reminderMode: config.reminderMode,
             aiRoutingEnabled: config.aiRoutingEnabled,
+            aiKeyPresent: Boolean(getOptionalEnv('OPENAI_API_KEY')),
             minAgeHours: config.minAgeHours,
             maxAgeHours: config.maxAgeHours,
             maxTicketsPerRun: config.maxTicketsPerRun,
