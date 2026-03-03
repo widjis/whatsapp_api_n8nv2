@@ -318,3 +318,7 @@
 - Change:
   - Main app now starts the helpdesk dispatcher when DISPATCHER_ENABLED=true.
   - Docker `CMD node dist/index.js` will run dispatcher without a second container.
+
+## [2026-03-03 20:13:57 WITA] Add dispatcher heartbeat logs for scheduling
+- Change:
+  - Logs next scheduled scan time based on DISPATCHER_SCAN_INTERVAL_SECONDS.

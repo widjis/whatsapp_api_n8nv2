@@ -1342,17 +1342,20 @@ export function startHelpdeskDispatcher(): { stop: () => void } {
 
   let stopped = false;
   let timer: NodeJS.Timeout | null = null;
+  let runCount = 0;
 
   const tick = async () => {
     if (stopped) return;
     const lockToken = await acquireScanLock(config.lockTtlSeconds);
     if (!lockToken) return;
     try {
+      runCount += 1;
       const result = await runScanOnce(config);
       console.log(
         JSON.stringify(
           {
             scope: 'helpdesk_dispatcher',
+            runCount,
             mode: config.dryRun ? 'dry_run' : 'live',
             notifyMode: config.notifyMode,
             reminderMode: config.reminderMode,
@@ -1381,6 +1384,21 @@ export function startHelpdeskDispatcher(): { stop: () => void } {
 
   const scheduleNext = () => {
     if (stopped) return;
+    const now = new Date();
+    const nextRunAt = new Date(now.getTime() + config.scanIntervalSeconds * 1000);
+    console.log(
+      JSON.stringify(
+        {
+          scope: 'helpdesk_dispatcher_heartbeat',
+          runCount,
+          scanIntervalSeconds: config.scanIntervalSeconds,
+          nowIso: now.toISOString(),
+          nextRunAtIso: nextRunAt.toISOString(),
+        },
+        null,
+        2
+      )
+    );
     timer = setTimeout(() => {
       void tick().finally(() => scheduleNext());
     }, config.scanIntervalSeconds * 1000);
