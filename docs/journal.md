@@ -271,3 +271,45 @@
 ## [2026-03-03 08:22:13 WITA] Draft Helpdesk Dispatcher phased plan
 - Change:
   - Added a phase-by-phase implementation plan for a ManageEngine Helpdesk Dispatcher.
+
+## [2026-03-03 11:07:47 WITA] Implement Helpdesk Dispatcher process and routing
+- Change:
+  - Added dispatcher process entrypoint and core scan/route/assign logic for ServiceDesk.
+  - Added configurable notification modes with direct-to-technician messaging via gateway endpoint.
+
+## [2026-03-03 12:51:40 WITA] Configure dispatcher environment variables
+- Change:
+  - Added DISPATCHER_* settings to .env with dry-run and notifications disabled.
+
+## [2026-03-03 13:11:24 WITA] Add load-based ICT technician assignment
+- Change:
+  - Treated ServiceDesk technician field as group routing target.
+  - Added load-based selection for udf_pick_601 from technicianContacts members.
+
+## [2026-03-03 13:52:59 WITA] Add dispatcher per-ticket assignment logs
+- Change:
+  - Added optional assignment log output showing ticketId, group, picked ICT technician, and link.
+
+## [2026-03-03 13:58:45 WITA] Add minimum ticket age gate for dispatcher actions
+- Change:
+  - Added DISPATCHER_MIN_AGE_HOURS to avoid acting on brand new tickets.
+
+## [2026-03-03 14:19:40 WITA] Implement dispatcher reminders, digest, and AI routing
+- Change:
+  - Added reminder rules with cooldown and max-per-run limits.
+  - Added scheduled operational digest preview/sender with age buckets.
+  - Added AI-assisted routing with confidence threshold and heuristic fallback.
+  - Added weighted ICT selection with caps, exclusions, and manual override backoff.
+
+## [2026-03-03 14:35:32 WITA] Make dispatcher load calculation per-group
+- Change:
+  - Load now counts open tickets per ICT technician within the same group.
+
+## [2026-03-03 16:03:41 WITA] Fix dry-run state affecting assignment logs
+- Change:
+  - Dry-run no longer records lastAssigned* as if updates were applied.
+  - If ticket is still unassigned, dispatcher can retry even if state exists.
+
+## [2026-03-03 18:32:12 WITA] Improve AI routing prompt with business rules
+- Change:
+  - Updated AI routing prompt to reflect IT Support vs IT Field vs Document Control definitions.

@@ -30,6 +30,14 @@ type ServiceDeskTechnician = {
   name?: string;
 };
 
+type ServiceDeskGroup = {
+  name?: string;
+};
+
+type ServiceDeskOwner = {
+  name?: string;
+};
+
 type ServiceDeskUdfFields = {
   udf_pick_601?: string;
 };
@@ -55,8 +63,10 @@ export type ServiceDeskRequest = {
   template?: ServiceDeskTemplate;
   status?: ServiceDeskCategory;
   priority?: ServiceDeskCategory;
+  group?: ServiceDeskGroup;
   udf_fields?: ServiceDeskUdfFields;
   technician?: ServiceDeskTechnician;
+  owner?: ServiceDeskOwner;
   attachments?: ServiceDeskAttachment[];
   created_time?: ServiceDeskDisplayTime;
 };

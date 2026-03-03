@@ -78,6 +78,15 @@ npm run dev   # nodemon
 npm start     # node
 ```
 
+### Helpdesk Dispatcher (optional)
+Runs a separate process that scans ServiceDesk tickets and auto-assigns groups.
+
+```bash
+npm run dispatcher:dev
+# or (after build)
+npm run build && npm run dispatcher
+```
+
 ## Docker
 Build + run (reads `.env` and persists WhatsApp state under a Docker volume):
 ```bash
