@@ -337,3 +337,14 @@
 - Change:
   - Added DISPATCHER_ICT_EXCLUDE / DISPATCHER_ICT_MAX_OPEN / DISPATCHER_ICT_WEIGHTS docs.
   - Added Docker AI troubleshooting section to dispatcher setup docs.
+
+## [2026-03-03 20:59:18 WITA] Enforce ticket template before assigning ICT technician
+- Change:
+  - Dispatcher enforces template “Submit a New Request” (id 305) before assignment updates.
+  - Fixed dispatcher group assignment to use updateRequest(groupName) (was technicianName).
+  - Updated dispatcher setup docs and README to reflect current behavior.
+
+## [2026-03-03 21:05:14 WITA] Enforce template even when assignment already set
+- Change:
+  - Dispatcher now updates template even if group/ICT are already assigned.
+  - Template-only updates do not trigger digest/direct notifications.

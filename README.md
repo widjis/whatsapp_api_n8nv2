@@ -79,13 +79,14 @@ npm start     # node
 ```
 
 ### Helpdesk Dispatcher (optional)
-Runs a separate process that scans ServiceDesk tickets and auto-assigns groups.
+Runs inside the main server process (same `npm run dev` / Docker container) when `DISPATCHER_ENABLED=true`.
 
 ```bash
-npm run dispatcher:dev
-# or (after build)
-npm run build && npm run dispatcher
+# main dev server (WhatsApp gateway + dispatcher)
+npm run dev
 ```
+
+Dispatcher configuration is documented in [dispatcher_setup.md](file:///Users/widjis/Documents/Projects/whatsapp_api_n8nv2/docs/dispatcher_setup.md).
 
 ## Docker
 Build + run (reads `.env` and persists WhatsApp state under a Docker volume):

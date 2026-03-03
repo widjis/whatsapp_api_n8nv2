@@ -52,6 +52,30 @@ This document describes the dispatcher environment variables currently used in [
 - Example:
   - `Resolved,Closed`
 
+## Template Enforcement
+
+If enabled, the dispatcher will set the request template before assigning group/ICT technician. This avoids mismatched UDF fields across templates.
+
+### DISPATCHER_ENFORCE_TEMPLATE
+- Type: boolean
+- Purpose: Enable/disable template enforcement.
+- Default: `true`
+
+### DISPATCHER_REQUIRED_TEMPLATE_NAME
+- Type: string
+- Purpose: Required request template name.
+- Default: `Submit a New Request`
+
+### DISPATCHER_REQUIRED_TEMPLATE_ID
+- Type: string
+- Purpose: Required request template id.
+- Default: `305`
+
+### DISPATCHER_REQUIRED_TEMPLATE_IS_SERVICE
+- Type: boolean
+- Purpose: Whether the template is a service template.
+- Default: `false`
+
 ## Scan + Action Limits
 
 ### DISPATCHER_MAX_TICKETS_PER_RUN

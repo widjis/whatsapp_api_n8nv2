@@ -21,6 +21,10 @@ type DispatcherConfig = {
   scanIntervalSeconds: number;
   runOnce: boolean;
   dryRun: boolean;
+  enforceTemplate: boolean;
+  requiredTemplateId: string;
+  requiredTemplateName: string;
+  requiredTemplateIsService: boolean;
   minAgeHours: number;
   maxAgeHours: number;
   maxTicketsPerRun: number;
@@ -81,6 +85,8 @@ type AssignmentLogItem = {
   ticketId: string;
   link: string;
   reason: string;
+  fromTemplate: string;
+  toTemplate: string;
   fromGroup: string;
   toGroup: string;
   fromIctTechnician: string;
@@ -188,6 +194,10 @@ function buildConfig(): DispatcherConfig {
   const scanIntervalSeconds = Math.max(10, Math.floor(parseNumberEnv('DISPATCHER_SCAN_INTERVAL_SECONDS', 300)));
   const runOnce = parseBooleanEnv('DISPATCHER_RUN_ONCE', false);
   const dryRun = parseBooleanEnv('DISPATCHER_DRY_RUN', true);
+  const enforceTemplate = parseBooleanEnv('DISPATCHER_ENFORCE_TEMPLATE', true);
+  const requiredTemplateId = getOptionalEnv('DISPATCHER_REQUIRED_TEMPLATE_ID') ?? '305';
+  const requiredTemplateName = getOptionalEnv('DISPATCHER_REQUIRED_TEMPLATE_NAME') ?? 'Submit a New Request';
+  const requiredTemplateIsService = parseBooleanEnv('DISPATCHER_REQUIRED_TEMPLATE_IS_SERVICE', false);
   const minAgeHours = Math.max(0, Math.floor(parseNumberEnv('DISPATCHER_MIN_AGE_HOURS', 0)));
   const maxAgeHours = Math.max(1, Math.floor(parseNumberEnv('DISPATCHER_MAX_AGE_HOURS', 24)));
   const maxTicketsPerRun = Math.max(1, Math.floor(parseNumberEnv('DISPATCHER_MAX_TICKETS_PER_RUN', 100)));
@@ -240,6 +250,10 @@ function buildConfig(): DispatcherConfig {
     scanIntervalSeconds,
     runOnce,
     dryRun,
+    enforceTemplate,
+    requiredTemplateId,
+    requiredTemplateName,
+    requiredTemplateIsService,
     minAgeHours,
     maxAgeHours,
     maxTicketsPerRun,
@@ -1121,6 +1135,15 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
         continue;
       }
 
+      const existingTemplate = normalizeText(requestObj.template?.name);
+      const shouldEnforceTemplate =
+        config.enforceTemplate &&
+        config.requiredTemplateId.trim().length > 0 &&
+        config.requiredTemplateName.trim().length > 0;
+      const hasTemplateChange =
+        shouldEnforceTemplate &&
+        (existingTemplate.length === 0 || existingTemplate.toLowerCase() !== config.requiredTemplateName.trim().toLowerCase());
+
       const hasGroupChange =
         typeof action.targetGroupName === 'string' &&
         action.targetGroupName.trim().length > 0 &&
@@ -1137,7 +1160,8 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
           !state?.lastAssignedIctTechnician ||
           state.lastAssignedIctTechnician.toLowerCase() !== action.targetIctTechnician.toLowerCase());
 
-      if (!hasGroupChange && !hasIctChange) {
+      const hasAssignmentChange = hasGroupChange || hasIctChange;
+      if (!hasAssignmentChange && !hasTemplateChange) {
         stats.skipped += 1;
         continue;
       }
@@ -1168,12 +1192,15 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
         const m = loadByGroupIct.get(groupKey(toGroup));
         return m ? (m.get(toIct) ?? 0) : 0;
       })();
+      const reason = hasTemplateChange ? `${action.reason}|template_enforce` : action.reason;
 
       if (assignmentLogs.length < config.logActionsMax) {
         assignmentLogs.push({
           ticketId: action.ticketId,
           link: buildTicketLink(action.ticketId),
-          reason: action.reason,
+          reason,
+          fromTemplate: existingTemplate,
+          toTemplate: hasTemplateChange ? config.requiredTemplateName : existingTemplate,
           fromGroup: existingGroup,
           toGroup,
           fromIctTechnician: existingIct,
@@ -1183,13 +1210,28 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
       }
 
       if (!config.dryRun) {
-        const updateRes = await updateRequest(action.ticketId, {
-          technicianName: hasGroupChange ? action.targetGroupName : undefined,
-          ictTechnician: hasIctChange ? action.targetIctTechnician : undefined,
-        });
-        if (!updateRes.success) {
-          stats.errors += 1;
-          continue;
+        if (hasTemplateChange) {
+          const templateRes = await updateRequest(action.ticketId, {
+            templateId: config.requiredTemplateId,
+            templateName: config.requiredTemplateName,
+            isServiceTemplate: config.requiredTemplateIsService,
+            serviceCategory: normalizeText(requestObj.service_category?.name) || undefined,
+          });
+          if (!templateRes.success) {
+            stats.errors += 1;
+            continue;
+          }
+        }
+
+        if (hasAssignmentChange) {
+          const updateRes = await updateRequest(action.ticketId, {
+            groupName: hasGroupChange ? action.targetGroupName : undefined,
+            ictTechnician: hasIctChange ? action.targetIctTechnician : undefined,
+          });
+          if (!updateRes.success) {
+            stats.errors += 1;
+            continue;
+          }
         }
       }
 
@@ -1206,14 +1248,17 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
       });
 
       if (config.notifyMode === 'digest') {
-        digestItems.push({
-          ticketId: action.ticketId,
-          groupName: action.targetGroupName ?? existingGroup,
-          subject: normalizeText(requestObj.subject),
-        });
+        if (hasAssignmentChange) {
+          digestItems.push({
+            ticketId: action.ticketId,
+            groupName: action.targetGroupName ?? existingGroup,
+            subject: normalizeText(requestObj.subject),
+          });
+        }
         continue;
       }
 
+      if (!hasAssignmentChange) continue;
       if (!action.notify || config.notifyMode !== 'direct') continue;
       if (notificationsLeft <= 0) continue;
 
@@ -1228,7 +1273,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
       const subject = normalizeText(requestObj.subject);
 
       const notificationHash = computeNotificationHash(
-        `update|${action.ticketId}|${action.targetGroupName ?? ''}|${action.targetIctTechnician ?? ''}|${action.reason}`
+        `update|${action.ticketId}|${action.targetGroupName ?? ''}|${action.targetIctTechnician ?? ''}|${reason}`
       );
       if (state?.lastNotifiedHash === notificationHash) continue;
 
@@ -1240,7 +1285,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
         groupName: notifyGroupName,
         requester,
         createdAt,
-        reason: action.reason,
+        reason,
       });
 
       if (!config.dryRun) {
@@ -1377,6 +1422,9 @@ export function startHelpdeskDispatcher(): { stop: () => void } {
             reminderMode: config.reminderMode,
             aiRoutingEnabled: config.aiRoutingEnabled,
             aiKeyPresent: Boolean(getOptionalEnv('OPENAI_API_KEY')),
+            enforceTemplate: config.enforceTemplate,
+            requiredTemplateName: config.requiredTemplateName,
+            requiredTemplateId: config.requiredTemplateId,
             minAgeHours: config.minAgeHours,
             maxAgeHours: config.maxAgeHours,
             maxTicketsPerRun: config.maxTicketsPerRun,
