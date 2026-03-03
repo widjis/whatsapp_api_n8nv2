@@ -313,3 +313,8 @@
 ## [2026-03-03 18:32:12 WITA] Improve AI routing prompt with business rules
 - Change:
   - Updated AI routing prompt to reflect IT Support vs IT Field vs Document Control definitions.
+
+## [2026-03-03 18:56:03 WITA] Run dispatcher inside main server process
+- Change:
+  - Main app now starts the helpdesk dispatcher when DISPATCHER_ENABLED=true.
+  - Docker `CMD node dist/index.js` will run dispatcher without a second container.

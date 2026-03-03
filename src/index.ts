@@ -11,6 +11,7 @@ import { makeInMemoryStore } from './features/whatsapp/store.js';
 import { startWhatsApp, getSocket, checkRegisteredNumber } from './features/whatsapp/start.js';
 import { createCheckIpMiddleware } from './features/http/middleware/checkIp.js';
 import { registerMessageRoutes } from './features/http/routes/messages.js';
+import { startHelpdeskDispatcher } from './features/dispatcher/helpdeskDispatcher.js';
 
 dotenv.config();
 
@@ -29,6 +30,18 @@ function resolveDataDir(rootDir: string): string | null {
 const app = express();
 const server = createServer(app);
 const io = new SocketIoServer(server);
+
+const dispatcher = startHelpdeskDispatcher();
+
+function shutdown() {
+  dispatcher.stop();
+  server.close(() => {
+    process.exit(0);
+  });
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 const portRaw = process.env.PORT;
 const port = portRaw ? Number(portRaw) : 8192;
