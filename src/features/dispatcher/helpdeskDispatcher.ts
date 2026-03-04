@@ -878,7 +878,7 @@ function buildOperationalDigestMessage(args: {
     if (ageHours === null) continue;
     if (ageHours > config.maxAgeHours) continue;
 
-    const groupName = resolveEffectiveGroupName(config, r) || 'Unassigned';
+    const groupName = normalizeText(r.technician?.name) || normalizeText(r.group?.name) || 'Unassigned';
     groupCounts.set(groupName, (groupCounts.get(groupName) ?? 0) + 1);
 
     const idx = resolveAgeBucketIndex(ageHours, buckets);
@@ -887,7 +887,7 @@ function buildOperationalDigestMessage(args: {
     groupBucketCounts.set(groupName, arr);
 
     const ict = normalizeText(r.udf_fields?.udf_pick_601);
-    const needsAssignment = !resolveEffectiveGroupName(config, r) || !ict;
+    const needsAssignment = !normalizeText(r.technician?.name) || !ict;
     if (needsAssignment) {
       unassignedItems.push({
         ticketId: r.id,
@@ -948,11 +948,13 @@ async function planAction(args: {
 }): Promise<PlannedAction> {
   const { config, requestObj, contacts, loadByGroupIct } = args;
   const ticketId = requestObj.id;
-  const groupName = resolveEffectiveGroupName(config, requestObj);
+  const assignedGroupName = normalizeText(requestObj.technician?.name);
+  const sdpGroupName = normalizeText(requestObj.group?.name);
+  const groupName = assignedGroupName || sdpGroupName;
   const ictTechnician = normalizeText(requestObj.udf_fields?.udf_pick_601);
   const existingTemplate = normalizeText(requestObj.template?.name);
 
-  const isGroupMissing = groupName.length === 0;
+  const isGroupMissing = assignedGroupName.length === 0;
   const isIctTechnicianMissing = ictTechnician.length === 0 || ictTechnician.toLowerCase() === 'ict helpdesk';
   const shouldEnforceTemplate =
     config.enforceTemplate &&
@@ -971,6 +973,18 @@ async function planAction(args: {
   }
 
   if (isGroupMissing) {
+    if (sdpGroupName) {
+      const picked = pickIctTechnicianByLoad({ config, ticketId, groupName: sdpGroupName, contacts, loadByGroupIct });
+      return {
+        kind: 'update',
+        ticketId,
+        targetGroupName: sdpGroupName,
+        targetIctTechnician: isIctTechnicianMissing ? picked?.ict_name : undefined,
+        reason: 'mirror_group_to_technician',
+        notify: false,
+      };
+    }
+
     const decision = await routeTicket(config, requestObj);
     const picked = pickIctTechnicianByLoad({ config, ticketId, groupName: decision.targetGroupName, contacts, loadByGroupIct });
     const notify = config.notifyMode === 'direct';
@@ -984,11 +998,9 @@ async function planAction(args: {
     };
   }
 
-  if (isIctTechnicianMissing && isKnownGroupName(config, groupName)) {
+  if (isIctTechnicianMissing && groupName) {
     const picked = pickIctTechnicianByLoad({ config, ticketId, groupName, contacts, loadByGroupIct });
-    if (picked) {
-      return { kind: 'update', ticketId, targetIctTechnician: picked.ict_name, reason: 'assign_ict_by_load', notify: false };
-    }
+    if (picked) return { kind: 'update', ticketId, targetIctTechnician: picked.ict_name, reason: 'assign_ict_by_load', notify: false };
   }
 
   if (needsTemplateChange) {
@@ -1021,7 +1033,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
     const ict = normalizeText(requestObj.udf_fields?.udf_pick_601);
     if (!ict) continue;
 
-    let groupName = resolveEffectiveGroupName(config, requestObj);
+    let groupName = normalizeText(requestObj.technician?.name) || normalizeText(requestObj.group?.name);
     if (!groupName) {
       const contact = getContactByIctTechnicianName(ict);
       groupName = normalizeText(contact?.technician);
@@ -1055,7 +1067,8 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
     }
 
     const ticketId = requestObj.id;
-    const existingGroup = resolveEffectiveGroupName(config, requestObj);
+    const existingGroup = normalizeText(requestObj.technician?.name);
+    const existingSdpGroup = normalizeText(requestObj.group?.name);
     const existingIct = normalizeText(requestObj.udf_fields?.udf_pick_601);
     const ageHours = getTicketAgeHours(requestObj);
     if (ageHours === null) {
@@ -1066,7 +1079,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
     const state = await loadTicketState(ticketId);
 
     if (config.reminderMode !== 'none' && remindersLeft > 0) {
-      const isGroupMissing = existingGroup.length === 0;
+      const isGroupMissing = existingGroup.length === 0 && existingSdpGroup.length === 0;
       const isIctMissing = existingIct.length === 0 || existingIct.toLowerCase() === 'ict helpdesk';
 
       let reminderKind: ReminderLogItem['kind'] | null = null;
@@ -1081,7 +1094,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
         reminderReason = `unassigned>${config.remindUnassignedAfterHours}h`;
       } else if (!isGroupMissing && isIctMissing && config.remindUnpickedIctAfterHours > 0 && ageHours >= config.remindUnpickedIctAfterHours) {
         reminderKind = 'unpicked_ict';
-        reminderTarget = existingGroup;
+        reminderTarget = existingGroup || existingSdpGroup;
         reminderPhones = resolveContactsForGroup({ targetGroupName: reminderTarget, contacts }).map((c) => c.phone);
         reminderReason = `unpicked_ict>${config.remindUnpickedIctAfterHours}h`;
       } else if (!isGroupMissing && !isIctMissing && config.remindAssignedOpenAfterHours > 0 && ageHours >= config.remindAssignedOpenAfterHours) {
@@ -1091,7 +1104,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
         if (ictContact?.phone) {
           reminderPhones = [ictContact.phone];
         } else {
-          reminderPhones = resolveContactsForGroup({ targetGroupName: existingGroup, contacts }).map((c) => c.phone);
+          reminderPhones = resolveContactsForGroup({ targetGroupName: existingGroup || existingSdpGroup, contacts }).map((c) => c.phone);
         }
         reminderReason = `assigned_open>${config.remindAssignedOpenAfterHours}h`;
       }

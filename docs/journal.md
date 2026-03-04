@@ -378,3 +378,8 @@
 ## [2026-03-04 11:08:20 WITA] Route AI low-confidence tickets to triage
 - Change:
   - If AI responds with confidence below threshold, dispatcher routes to triage (no keyword fallback).
+
+## [2026-03-04 11:37:17 WITA] Treat missing technician as unassigned for reruns
+- Change:
+  - Dispatcher considers request.technician.name as the assignment marker.
+  - If technician is empty but group exists, dispatcher mirrors group into technician and assigns ICT by load.
