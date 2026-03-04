@@ -374,3 +374,7 @@
 ## [2026-03-04 10:58:45 WITA] Keep dispatcher process alive for heartbeat
 - Change:
   - Dispatcher scheduling timer no longer uses unref(), so heartbeat keeps running when dispatcher runs standalone.
+
+## [2026-03-04 11:08:20 WITA] Route AI low-confidence tickets to triage
+- Change:
+  - If AI responds with confidence below threshold, dispatcher routes to triage (no keyword fallback).

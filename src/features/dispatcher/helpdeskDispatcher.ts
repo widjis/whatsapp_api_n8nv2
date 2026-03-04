@@ -696,7 +696,12 @@ async function routeTicket(config: DispatcherConfig, requestObj: ServiceDeskRequ
     const ai = safeParseAiRouteDecision(content);
     if (!ai) return heuristicWithFallback('parse_fail');
     if (ai.confidence < config.aiRoutingConfidenceThreshold) {
-      return heuristicWithFallback(`low_conf(${Math.round(ai.confidence * 100) / 100})`);
+      const rounded = Math.round(ai.confidence * 100) / 100;
+      return {
+        routeKey: 'triage',
+        targetGroupName: mapRouteKeyToGroup(config, 'triage'),
+        reason: `ai_low_conf(${rounded})|triage`,
+      };
     }
     return {
       routeKey: ai.routeKey,
