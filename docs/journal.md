@@ -370,3 +370,7 @@
 ## [2026-03-04 10:37:11 WITA] Enforce template even when ticket is already assigned
 - Change:
   - Template enforcement now runs even if group/ICT are already filled (prevents false skips).
+
+## [2026-03-04 10:58:45 WITA] Keep dispatcher process alive for heartbeat
+- Change:
+  - Dispatcher scheduling timer no longer uses unref(), so heartbeat keeps running when dispatcher runs standalone.

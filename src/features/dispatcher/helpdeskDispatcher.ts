@@ -1541,7 +1541,6 @@ export function startHelpdeskDispatcher(): { stop: () => void } {
     timer = setTimeout(() => {
       void tick().finally(() => scheduleNext());
     }, config.scanIntervalSeconds * 1000);
-    timer.unref();
   };
 
   void tick().finally(() => {
