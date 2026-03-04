@@ -945,9 +945,17 @@ async function planAction(args: {
   const ticketId = requestObj.id;
   const groupName = resolveEffectiveGroupName(config, requestObj);
   const ictTechnician = normalizeText(requestObj.udf_fields?.udf_pick_601);
+  const existingTemplate = normalizeText(requestObj.template?.name);
 
   const isGroupMissing = groupName.length === 0;
   const isIctTechnicianMissing = ictTechnician.length === 0 || ictTechnician.toLowerCase() === 'ict helpdesk';
+  const shouldEnforceTemplate =
+    config.enforceTemplate &&
+    config.requiredTemplateId.trim().length > 0 &&
+    config.requiredTemplateName.trim().length > 0;
+  const needsTemplateChange =
+    shouldEnforceTemplate &&
+    (existingTemplate.length === 0 || existingTemplate.toLowerCase() !== config.requiredTemplateName.trim().toLowerCase());
 
   if (ictTechnician && isGroupMissing) {
     const contact = getContactByIctTechnicianName(ictTechnician);
@@ -976,6 +984,10 @@ async function planAction(args: {
     if (picked) {
       return { kind: 'update', ticketId, targetIctTechnician: picked.ict_name, reason: 'assign_ict_by_load', notify: false };
     }
+  }
+
+  if (needsTemplateChange) {
+    return { kind: 'update', ticketId, reason: 'template_enforce', notify: false };
   }
 
   return { kind: 'skip', ticketId, reason: 'already_assigned_or_not_actionable' };

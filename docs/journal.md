@@ -366,3 +366,7 @@
 - Change:
   - Dispatcher updates request.technician.name using targetGroupName.
   - Dispatcher keeps ICT technician in udf_pick_601 and verifies against technician+udf.
+
+## [2026-03-04 10:37:11 WITA] Enforce template even when ticket is already assigned
+- Change:
+  - Template enforcement now runs even if group/ICT are already filled (prevents false skips).
