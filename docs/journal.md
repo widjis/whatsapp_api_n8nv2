@@ -357,3 +357,12 @@
 ## [2026-03-04 09:11:00 WITA] Fallback to /assign when group update is rejected
 - Change:
   - If ServiceDesk rejects group update on /requests/{id} with field=group Invalid Input, dispatcher retries via /requests/{id}/assign.
+
+## [2026-03-04 10:05:46 WITA] Route Morowali tickets to valid SDP group names
+- Change:
+  - Dispatcher uses site-aware group mapping for Morowali (ICT System and Support / ICT Network and Infrastructure / ICT Document Controller).
+
+## [2026-03-04 10:11:27 WITA] Assign via technician field and ICT UDF field
+- Change:
+  - Dispatcher updates request.technician.name using targetGroupName.
+  - Dispatcher keeps ICT technician in udf_pick_601 and verifies against technician+udf.

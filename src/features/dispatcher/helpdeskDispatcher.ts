@@ -4,7 +4,6 @@ import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import {
   getAllRequests,
-  assignGroupToRequest,
   updateRequest,
   viewRequest,
   type ServiceDeskRequest,
@@ -599,6 +598,13 @@ function routeTicketHeuristic(config: DispatcherConfig, requestObj: ServiceDeskR
   return { routeKey: 'triage', targetGroupName: config.groupNames.triage, reason: 'default:triage' };
 }
 
+function mapRouteKeyToGroup(config: DispatcherConfig, routeKey: RouteDecision['routeKey']): string {
+  if (routeKey === 'doc_control') return config.groupNames.docControl;
+  if (routeKey === 'it_field') return config.groupNames.itField;
+  if (routeKey === 'it_support') return config.groupNames.itSupport;
+  return config.groupNames.triage;
+}
+
 function getOpenAiClient(): OpenAI {
   const apiKey = getOptionalEnv('OPENAI_API_KEY');
   if (!apiKey) throw new Error('OPENAI_API_KEY must be set in environment');
@@ -637,13 +643,6 @@ function safeParseAiRouteDecision(raw: string): AiRouteDecision | null {
   if (typeof confidence !== 'number' || !Number.isFinite(confidence)) return null;
   if (typeof reason !== 'string') return null;
   return { routeKey, confidence, reason };
-}
-
-function mapRouteKeyToGroup(config: DispatcherConfig, routeKey: RouteDecision['routeKey']): string {
-  if (routeKey === 'doc_control') return config.groupNames.docControl;
-  if (routeKey === 'it_field') return config.groupNames.itField;
-  if (routeKey === 'it_support') return config.groupNames.itSupport;
-  return config.groupNames.triage;
 }
 
 async function routeTicket(config: DispatcherConfig, requestObj: ServiceDeskRequest): Promise<RouteDecision> {
@@ -1227,28 +1226,12 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
 
         if (!applyError && hasAssignmentChange) {
           const updateRes = await updateRequest(action.ticketId, {
-            groupName: hasGroupChange ? action.targetGroupName : undefined,
+            technicianName: hasGroupChange ? action.targetGroupName : undefined,
             ictTechnician: hasIctChange ? action.targetIctTechnician : undefined,
           });
           if (!updateRes.success) {
-            const groupInvalid =
-              hasGroupChange && updateRes.message.includes('"field":"group"') && updateRes.message.includes('Invalid Input');
-            if (groupInvalid) {
-              const groupRes = await assignGroupToRequest({ requestId: action.ticketId, groupName: toGroup });
-              if (!groupRes.success) {
-                stats.errors += 1;
-                applyError = `group_assign_failed:${groupRes.message}`;
-              } else if (hasIctChange) {
-                const ictRes = await updateRequest(action.ticketId, { ictTechnician: action.targetIctTechnician });
-                if (!ictRes.success) {
-                  stats.errors += 1;
-                  applyError = `ict_update_failed:${ictRes.message}`;
-                }
-              }
-            } else {
-              stats.errors += 1;
-              applyError = `assignment_update_failed:${updateRes.message}`;
-            }
+            stats.errors += 1;
+            applyError = `assignment_update_failed:${updateRes.message}`;
           }
         }
 
@@ -1261,7 +1244,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
             applyError = 'verify_failed:view_request_null';
           } else {
             afterTemplate = normalizeText(refreshed.template?.name);
-            afterGroup = normalizeText(refreshed.group?.name);
+            afterGroup = normalizeText(refreshed.technician?.name);
             afterIctTechnician = normalizeText(refreshed.udf_fields?.udf_pick_601);
 
             const templateOk =

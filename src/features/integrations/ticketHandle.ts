@@ -54,6 +54,11 @@ type ServiceDeskTemplate = {
   id?: string;
 };
 
+type ServiceDeskSite = {
+  name?: string;
+  id?: string;
+};
+
 export type ServiceDeskRequest = {
   id: string;
   subject?: string;
@@ -64,6 +69,7 @@ export type ServiceDeskRequest = {
   status?: ServiceDeskCategory;
   priority?: ServiceDeskCategory;
   group?: ServiceDeskGroup;
+  site?: ServiceDeskSite;
   udf_fields?: ServiceDeskUdfFields;
   technician?: ServiceDeskTechnician;
   owner?: ServiceDeskOwner;
