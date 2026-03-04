@@ -327,6 +327,39 @@ export type AssignTechnicianArgs = {
   technicianName: string;
 };
 
+export async function assignGroupToRequest(args: { requestId: string; groupName: string }): Promise<UpdateRequestResult> {
+  const { requestId, groupName } = args;
+  if (!requestId || !groupName) {
+    return { success: false, message: 'Invalid input parameters. Please provide requestId and groupName.' };
+  }
+
+  const { apiBaseUrl } = getServiceDeskUrls();
+  const headers = getServiceDeskHeaders();
+  const assignUrl = `${apiBaseUrl}/requests/${requestId}/assign`;
+
+  const assignData = {
+    request: {
+      group: { name: groupName },
+    },
+  };
+
+  const data = `input_data=${encodeURIComponent(JSON.stringify(assignData))}`;
+
+  try {
+    await axios.put(assignUrl, data, { headers, httpsAgent: agent });
+    return { success: true, message: `Request with id: ${requestId} group assigned successfully.` };
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const payload = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+      return { success: false, message: `HTTP error occurred${status ? ` (status ${status})` : ''}: ${payload}` };
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, message: `Request exception occurred: ${message}` };
+  }
+}
+
 export async function assignTechnicianToRequest(args: AssignTechnicianArgs): Promise<UpdateRequestResult> {
   const { requestId, groupName, technicianName } = args;
   if (!requestId || !groupName || !technicianName) {

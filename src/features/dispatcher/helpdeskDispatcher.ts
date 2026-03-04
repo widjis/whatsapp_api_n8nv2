@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import {
   getAllRequests,
+  assignGroupToRequest,
   updateRequest,
   viewRequest,
   type ServiceDeskRequest,
@@ -1230,8 +1231,24 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
             ictTechnician: hasIctChange ? action.targetIctTechnician : undefined,
           });
           if (!updateRes.success) {
-            stats.errors += 1;
-            applyError = `assignment_update_failed:${updateRes.message}`;
+            const groupInvalid =
+              hasGroupChange && updateRes.message.includes('"field":"group"') && updateRes.message.includes('Invalid Input');
+            if (groupInvalid) {
+              const groupRes = await assignGroupToRequest({ requestId: action.ticketId, groupName: toGroup });
+              if (!groupRes.success) {
+                stats.errors += 1;
+                applyError = `group_assign_failed:${groupRes.message}`;
+              } else if (hasIctChange) {
+                const ictRes = await updateRequest(action.ticketId, { ictTechnician: action.targetIctTechnician });
+                if (!ictRes.success) {
+                  stats.errors += 1;
+                  applyError = `ict_update_failed:${ictRes.message}`;
+                }
+              }
+            } else {
+              stats.errors += 1;
+              applyError = `assignment_update_failed:${updateRes.message}`;
+            }
           }
         }
 

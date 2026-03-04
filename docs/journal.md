@@ -353,3 +353,7 @@
 - Change:
   - Assignment logs now include applied/verified flags and post-update values.
   - Dispatcher verifies template/group/ICT via viewRequest after updates and reports failures.
+
+## [2026-03-04 09:11:00 WITA] Fallback to /assign when group update is rejected
+- Change:
+  - If ServiceDesk rejects group update on /requests/{id} with field=group Invalid Input, dispatcher retries via /requests/{id}/assign.
