@@ -92,6 +92,12 @@ type AssignmentLogItem = {
   fromIctTechnician: string;
   toIctTechnician: string;
   toIctLoad: number;
+  applied: boolean;
+  applyError: string | null;
+  verified: boolean;
+  afterTemplate: string;
+  afterGroup: string;
+  afterIctTechnician: string;
 };
 
 type ReminderLogItem = {
@@ -1194,6 +1200,67 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
       })();
       const reason = hasTemplateChange ? `${action.reason}|template_enforce` : action.reason;
 
+      let applied = false;
+      let applyError: string | null = null;
+      let verified = false;
+      let afterTemplate = existingTemplate;
+      let afterGroup = existingGroup;
+      let afterIctTechnician = existingIct;
+
+      if (config.dryRun) {
+        applied = false;
+        verified = false;
+      } else {
+        if (hasTemplateChange) {
+          const templateRes = await updateRequest(action.ticketId, {
+            templateId: config.requiredTemplateId,
+            templateName: config.requiredTemplateName,
+            isServiceTemplate: config.requiredTemplateIsService,
+            serviceCategory: normalizeText(requestObj.service_category?.name) || undefined,
+          });
+          if (!templateRes.success) {
+            stats.errors += 1;
+            applyError = `template_update_failed:${templateRes.message}`;
+          }
+        }
+
+        if (!applyError && hasAssignmentChange) {
+          const updateRes = await updateRequest(action.ticketId, {
+            groupName: hasGroupChange ? action.targetGroupName : undefined,
+            ictTechnician: hasIctChange ? action.targetIctTechnician : undefined,
+          });
+          if (!updateRes.success) {
+            stats.errors += 1;
+            applyError = `assignment_update_failed:${updateRes.message}`;
+          }
+        }
+
+        applied = !applyError;
+
+        if (applied) {
+          const refreshed = await viewRequest(action.ticketId);
+          if (!refreshed) {
+            stats.errors += 1;
+            applyError = 'verify_failed:view_request_null';
+          } else {
+            afterTemplate = normalizeText(refreshed.template?.name);
+            afterGroup = normalizeText(refreshed.group?.name);
+            afterIctTechnician = normalizeText(refreshed.udf_fields?.udf_pick_601);
+
+            const templateOk =
+              !hasTemplateChange || afterTemplate.toLowerCase() === config.requiredTemplateName.trim().toLowerCase();
+            const groupOk = !hasGroupChange || afterGroup.toLowerCase() === toGroup.toLowerCase();
+            const ictOk = !hasIctChange || afterIctTechnician.toLowerCase() === toIct.toLowerCase();
+
+            verified = templateOk && groupOk && ictOk;
+            if (!verified) {
+              stats.errors += 1;
+              applyError = `verify_failed:template=${afterTemplate}|group=${afterGroup}|ict=${afterIctTechnician}`;
+            }
+          }
+        }
+      }
+
       if (assignmentLogs.length < config.logActionsMax) {
         assignmentLogs.push({
           ticketId: action.ticketId,
@@ -1206,46 +1273,41 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
           fromIctTechnician: existingIct,
           toIctTechnician: toIct,
           toIctLoad,
+          applied,
+          applyError,
+          verified,
+          afterTemplate,
+          afterGroup,
+          afterIctTechnician,
         });
       }
 
-      if (!config.dryRun) {
-        if (hasTemplateChange) {
-          const templateRes = await updateRequest(action.ticketId, {
-            templateId: config.requiredTemplateId,
-            templateName: config.requiredTemplateName,
-            isServiceTemplate: config.requiredTemplateIsService,
-            serviceCategory: normalizeText(requestObj.service_category?.name) || undefined,
-          });
-          if (!templateRes.success) {
-            stats.errors += 1;
-            continue;
-          }
-        }
-
-        if (hasAssignmentChange) {
-          const updateRes = await updateRequest(action.ticketId, {
-            groupName: hasGroupChange ? action.targetGroupName : undefined,
-            ictTechnician: hasIctChange ? action.targetIctTechnician : undefined,
-          });
-          if (!updateRes.success) {
-            stats.errors += 1;
-            continue;
-          }
-        }
+      if (!config.dryRun && (!applied || !verified)) {
+        continue;
       }
 
       assignmentsLeft -= 1;
       stats.assigned += 1;
-      await saveTicketState({
-        ticketId: action.ticketId,
-        lastActionAtIso: new Date().toISOString(),
-        lastAssignedGroupName: config.dryRun ? (state?.lastAssignedGroupName ?? null) : hasGroupChange ? action.targetGroupName ?? null : state?.lastAssignedGroupName ?? null,
-        lastAssignedIctTechnician: config.dryRun ? (state?.lastAssignedIctTechnician ?? null) : hasIctChange ? action.targetIctTechnician ?? null : state?.lastAssignedIctTechnician ?? null,
-        lastNotifiedHash: state?.lastNotifiedHash ?? null,
-        lastReminderAtIso: state?.lastReminderAtIso ?? null,
-        lastReminderHash: state?.lastReminderHash ?? null,
-      });
+
+      if (hasAssignmentChange) {
+        await saveTicketState({
+          ticketId: action.ticketId,
+          lastActionAtIso: new Date().toISOString(),
+          lastAssignedGroupName: config.dryRun
+            ? (state?.lastAssignedGroupName ?? null)
+            : hasGroupChange
+              ? action.targetGroupName ?? null
+              : state?.lastAssignedGroupName ?? null,
+          lastAssignedIctTechnician: config.dryRun
+            ? (state?.lastAssignedIctTechnician ?? null)
+            : hasIctChange
+              ? action.targetIctTechnician ?? null
+              : state?.lastAssignedIctTechnician ?? null,
+          lastNotifiedHash: state?.lastNotifiedHash ?? null,
+          lastReminderAtIso: state?.lastReminderAtIso ?? null,
+          lastReminderHash: state?.lastReminderHash ?? null,
+        });
+      }
 
       if (config.notifyMode === 'digest') {
         if (hasAssignmentChange) {

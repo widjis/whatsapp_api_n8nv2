@@ -348,3 +348,8 @@
 - Change:
   - Dispatcher now updates template even if group/ICT are already assigned.
   - Template-only updates do not trigger digest/direct notifications.
+
+## [2026-03-04 09:07:36 WITA] Verify ServiceDesk updates and log apply results
+- Change:
+  - Assignment logs now include applied/verified flags and post-update values.
+  - Dispatcher verifies template/group/ICT via viewRequest after updates and reports failures.
