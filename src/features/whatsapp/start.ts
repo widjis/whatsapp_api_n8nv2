@@ -942,6 +942,13 @@ function isReactionRemoved(reactionText: string | null | undefined): boolean {
   return reactionText === '' || reactionText === null;
 }
 
+function isClosedStatusName(value: string | null | undefined): boolean {
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!v) return false;
+  const closedPrefixes = ['resolved', 'closed', 'cancelled', 'canceled'];
+  return closedPrefixes.some((prefix) => v === prefix || v.startsWith(`${prefix} `) || v.startsWith(`${prefix}-`));
+}
+
 async function handleTicketReactionClaim(args: {
   sock: WASocket;
   deps: StartWhatsAppDeps;
@@ -1006,6 +1013,12 @@ async function handleTicketReactionClaim(args: {
 
   const requestObj = await viewRequest(ticketId);
   const previousStatus = requestObj?.status?.name ?? null;
+  if (isClosedStatusName(previousStatus)) {
+    await args.sock.sendMessage(args.remoteJid, {
+      text: `*Ticket Already Closed*\nTicket ID: *${ticketId}*\nStatus: *${previousStatus}*\nAction: Claim ignored.`,
+    });
+    return;
+  }
   const previousIctTechnician = requestObj?.udf_fields?.udf_pick_601 ?? null;
   const previousTechnicianName = requestObj?.technician?.name ?? null;
   const previousGroupNameUnknown: unknown = (requestObj as unknown as { group?: { name?: unknown } }).group?.name;

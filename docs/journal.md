@@ -383,3 +383,8 @@
 - Change:
   - Dispatcher considers request.technician.name as the assignment marker.
   - If technician is empty but group exists, dispatcher mirrors group into technician and assigns ICT by load.
+
+## [2026-03-12 11:27:19 WITA] Prevent resolved tickets reverting to In Progress
+- Change:
+  - Webhook handler no longer auto-sets status to In Progress for closed tickets.
+  - Reaction claim ignores tickets already in closed statuses.
