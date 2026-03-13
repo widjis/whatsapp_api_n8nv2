@@ -35,12 +35,19 @@ import {
   getTechnicianContactById,
   listTechnicianContacts,
   normalizeTechnicianPhoneNumber,
+  saveTechnicianContacts,
   searchTechnicianContacts,
   updateTechnicianContact,
 } from '../integrations/technicianContacts.js';
 import type { TechnicianContact, TechnicianContactUpdateField } from '../integrations/technicianContacts.js';
 import { claimTicketNotification, loadTicketNotification, unclaimTicketNotification } from '../tickets/claimStore.js';
 import { updateRequest, viewRequest } from '../integrations/ticketHandle.js';
+import {
+  buildLeaveScheduleIndexForDate,
+  getTodayIsoDateForOffsetHours,
+  normalizeScheduleBaseName,
+  resolveLeaveScheduleEntry,
+} from '../../leaveScheduleCheck.js';
 
 let sock: WASocket | undefined;
 const fatalLogger = pino({ level: 'fatal' });
@@ -754,7 +761,7 @@ const COMMAND_HELP: Record<string, CommandHelpEntry> = {
     description:
       "Comprehensive technician contact management system for IT support operations. Manage your team's contact information with full CRUD capabilities.",
     available:
-      '📋 **Available Commands:**\n• **list** - Display all technicians\n• **search <query>** - Find technicians by name, phone, email, or role\n• **view <id>** - Show detailed info for specific technician\n• **add** - Add new technician with full details\n• **update** - Modify existing technician information\n• **delete** - Remove technician from database',
+      '📋 **Available Commands:**\n• **list** - Display all technicians\n• **search <query>** - Find technicians by name, phone, email, or role\n• **view <id>** - Show detailed info for specific technician\n• **add** - Add new technician with full details\n• **update** - Modify existing technician information\n• **delete** - Remove technician from database\n• **mapleave** - Auto-map leave_schedule_name from leave schedule file',
     examples: [
       '📋 **List all technicians:**\n/technician list',
       '🔍 **Search for specific technician:**\n/technician search Peggy\n/technician search "IT Support"\n/technician search 08123',
@@ -762,9 +769,10 @@ const COMMAND_HELP: Record<string, CommandHelpEntry> = {
       '➕ **Add new technician:**\n/technician add "Ahmad Rizki" "Ahmad Rizki (Network Admin)" "08123456789" "ahmad.rizki@company.com" "Network Administrator" "Male"',
       '✏️ **Update technician info:**\n/technician update 3 "phone" "08987654321"\n/technician update 7 "email" "new.email@company.com"\n/technician update 2 "technician" "Senior IT Support"',
       '🗑️ **Remove technician:**\n/technician delete 8',
+      '🧭 **Auto-map leave schedule names:**\n/technician mapleave\n/technician /mapleave',
     ],
     details:
-      '**Real-world Usage Scenarios:**\n\n🔧 **Daily Operations:**\n• Quickly find technician contact during emergencies\n• Update phone numbers when staff get new devices\n• Add new team members with complete contact info\n• Search by role to find specialists (e.g., "Network", "Security")\n\n📱 **Search Tips:**\n• Search by partial name: "Peg" finds "Peggy"\n• Search by role: "IT Support" finds all support staff\n• Search by phone: "0812" finds numbers starting with 0812\n• Search is case-insensitive and matches partial text\n\n⚠️ **Important Notes:**\n• Use quotes for multi-word values: "John Doe"\n• Available fields for update: name, ict_name, phone, email, technician, gender\n• Each technician has a unique ID for precise operations\n• Changes are saved immediately to the database',
+      '**Real-world Usage Scenarios:**\n\n🔧 **Daily Operations:**\n• Quickly find technician contact during emergencies\n• Update phone numbers when staff get new devices\n• Add new team members with complete contact info\n• Search by role to find specialists (e.g., "Network", "Security")\n• Fill leave schedule mapping in bulk for dispatcher readiness\n\n📱 **Search Tips:**\n• Search by partial name: "Peg" finds "Peggy"\n• Search by role: "IT Support" finds all support staff\n• Search by phone: "0812" finds numbers starting with 0812\n• Search is case-insensitive and matches partial text\n\n⚠️ **Important Notes:**\n• Use quotes for multi-word values: "John Doe"\n• Available fields for update: name, ict_name, leave_schedule_name, phone, email, technician, gender\n• Each technician has a unique ID for precise operations\n• Changes are saved immediately to the database',
   },
   licenses: {
     usage: '/licenses [limit] [offset]',
@@ -1702,6 +1710,204 @@ function isUpdateField(value: string): value is TechnicianContactUpdateField {
   );
 }
 
+type LeaveMappingMode = 'exact' | 'pattern' | 'fuzzy';
+
+type LeaveMappingResolution = {
+  matchedKey: string;
+  mode: LeaveMappingMode;
+};
+
+type LeaveMappingItem = {
+  id: number;
+  ictName: string;
+  value: string;
+  mode: LeaveMappingMode;
+};
+
+function parseBoolean(input: string | undefined, defaultValue: boolean): boolean {
+  if (!input) return defaultValue;
+  const normalized = input.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  return defaultValue;
+}
+
+function parseNumber(input: string | undefined, defaultValue: number): number {
+  if (!input) return defaultValue;
+  const value = Number(input);
+  return Number.isFinite(value) ? value : defaultValue;
+}
+
+function resolveLeaveSchedulePathForMapping(): { xlsxPath: string; sheetName: string; tzOffsetHours: number; dateShiftDays: number; similarityThreshold: number } {
+  const dataDir = process.env.DATA_DIR && process.env.DATA_DIR.trim().length > 0 ? process.env.DATA_DIR.trim() : path.resolve(process.cwd(), 'data');
+  const xlsxPath =
+    process.env.DISPATCHER_LEAVE_SCHEDULE_XLSX_PATH && process.env.DISPATCHER_LEAVE_SCHEDULE_XLSX_PATH.trim().length > 0
+      ? process.env.DISPATCHER_LEAVE_SCHEDULE_XLSX_PATH.trim()
+      : path.join(dataDir, 'MTI - Leave Schedule (ICT Team).xlsx');
+  const sheetName =
+    process.env.DISPATCHER_LEAVE_SCHEDULE_SHEET && process.env.DISPATCHER_LEAVE_SCHEDULE_SHEET.trim().length > 0
+      ? process.env.DISPATCHER_LEAVE_SCHEDULE_SHEET.trim()
+      : 'Human Resource';
+  const tzOffsetHours = Math.floor(parseNumber(process.env.DISPATCHER_LEAVE_SCHEDULE_TZ_OFFSET_HOURS, 8));
+  const dateShiftDays = Math.floor(parseNumber(process.env.DISPATCHER_LEAVE_SCHEDULE_DATE_SHIFT_DAYS, 1));
+  const similarityThreshold = Math.min(1, Math.max(0, parseNumber(process.env.DISPATCHER_LEAVE_SCHEDULE_SIM_THRESHOLD, 0.9)));
+  return { xlsxPath, sheetName, tzOffsetHours, dateShiftDays, similarityThreshold };
+}
+
+function resolvePatternCandidate(args: {
+  scheduleKeys: string[];
+  sourceName: string;
+}): string | null {
+  const sourceKey = normalizeScheduleBaseName(args.sourceName);
+  if (!sourceKey) return null;
+  const tokens = sourceKey
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 4);
+  if (tokens.length === 0) return null;
+
+  const matches: string[] = [];
+  for (const key of args.scheduleKeys) {
+    const keyTokens = key.split(/\s+/);
+    const keySet = new Set(keyTokens);
+    const ok = tokens.every((t) => {
+      if (keySet.has(t)) return true;
+      return keyTokens.some((kt) => isTokenLikelyTypoMatch(t, kt));
+    });
+    if (ok) matches.push(key);
+  }
+
+  if (matches.length !== 1) return null;
+  return matches[0];
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+
+  const prev: number[] = new Array(b.length + 1);
+  const curr: number[] = new Array(b.length + 1);
+
+  for (let j = 0; j <= b.length; j += 1) prev[j] = j;
+
+  for (let i = 1; i <= a.length; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        prev[j] + 1,
+        curr[j - 1] + 1,
+        prev[j - 1] + cost
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) prev[j] = curr[j];
+  }
+
+  return prev[b.length];
+}
+
+function isTokenLikelyTypoMatch(sourceToken: string, candidateToken: string): boolean {
+  if (sourceToken.length < 5 || candidateToken.length < 5) return false;
+  if (Math.abs(sourceToken.length - candidateToken.length) > 1) return false;
+  const distance = levenshteinDistance(sourceToken, candidateToken);
+  return distance <= 1;
+}
+
+function resolveLeaveMappingForContact(args: {
+  scheduleIndex: Map<string, { status: string | null; onsite: boolean }>;
+  scheduleKeys: string[];
+  sourceName: string;
+  allowFuzzy: boolean;
+  similarityThreshold: number;
+}): LeaveMappingResolution | null {
+  const sourceKey = normalizeScheduleBaseName(args.sourceName);
+  if (!sourceKey) return null;
+  if (args.scheduleIndex.has(sourceKey)) return { matchedKey: sourceKey, mode: 'exact' };
+
+  const pattern = resolvePatternCandidate({ scheduleKeys: args.scheduleKeys, sourceName: args.sourceName });
+  if (pattern) return { matchedKey: pattern, mode: 'pattern' };
+
+  const fuzzy = resolveLeaveScheduleEntry({
+    scheduleIndex: args.scheduleIndex,
+    personName: args.sourceName,
+    allowFuzzy: args.allowFuzzy,
+    similarityThreshold: args.similarityThreshold,
+  });
+  if (!fuzzy) return null;
+  return { matchedKey: fuzzy.matchedKey, mode: 'fuzzy' };
+}
+
+function autoMapLeaveScheduleNames(): {
+  changed: LeaveMappingItem[];
+  skippedExisting: number;
+  unresolved: Array<{ id: number; ictName: string }>;
+  dateIso: string;
+  xlsxPath: string;
+  sheetName: string;
+} {
+  const cfg = resolveLeaveSchedulePathForMapping();
+  const dateIso = getTodayIsoDateForOffsetHours(cfg.tzOffsetHours);
+  const scheduleIndex = buildLeaveScheduleIndexForDate({
+    xlsxPath: cfg.xlsxPath,
+    sheetName: cfg.sheetName,
+    dateIsoYyyyMmDd: dateIso,
+    dateHeaderRow1Based: 9,
+    dataStartRow1Based: 10,
+    dateShiftDays: cfg.dateShiftDays,
+  });
+  const scheduleKeys = Array.from(scheduleIndex.keys());
+  const allowFuzzy = parseBoolean(process.env.DISPATCHER_LEAVE_SCHEDULE_FUZZY, true);
+  const contacts = listTechnicianContacts();
+
+  const nextContacts = contacts.slice();
+  const changed: LeaveMappingItem[] = [];
+  let skippedExisting = 0;
+  const unresolved: Array<{ id: number; ictName: string }> = [];
+
+  for (let i = 0; i < nextContacts.length; i += 1) {
+    const contact = nextContacts[i];
+    const existing = typeof contact.leave_schedule_name === 'string' ? contact.leave_schedule_name.trim() : '';
+    if (existing.length > 0) {
+      skippedExisting += 1;
+      continue;
+    }
+
+    const sourceName = contact.ict_name || contact.name;
+    const mapped = resolveLeaveMappingForContact({
+      scheduleIndex,
+      scheduleKeys,
+      sourceName,
+      allowFuzzy,
+      similarityThreshold: cfg.similarityThreshold,
+    });
+
+    if (!mapped) {
+      unresolved.push({ id: contact.id, ictName: contact.ict_name });
+      continue;
+    }
+
+    nextContacts[i] = { ...contact, leave_schedule_name: mapped.matchedKey };
+    changed.push({
+      id: contact.id,
+      ictName: contact.ict_name,
+      value: mapped.matchedKey,
+      mode: mapped.mode,
+    });
+  }
+
+  if (changed.length > 0) saveTechnicianContacts(nextContacts);
+
+  return {
+    changed,
+    skippedExisting,
+    unresolved,
+    dateIso,
+    xlsxPath: cfg.xlsxPath,
+    sheetName: cfg.sheetName,
+  };
+}
+
 async function handleMessage(args: {
   sock: WASocket;
   msg: proto.IWebMessageInfo;
@@ -2023,7 +2229,8 @@ async function handleCommand(args: {
       }
 
       const tokens = splitCommandLine(messageContent);
-      const sub = tokens[1]?.toLowerCase();
+      const subRaw = tokens[1]?.toLowerCase();
+      const sub = subRaw ? subRaw.replace(/^\/+/, '') : undefined;
       if (!sub) {
         const helpText = renderCommandHelp('technician');
         await sock.sendMessage(remoteJid, { text: helpText ?? 'Usage: /technician <command>' });
@@ -2157,6 +2364,56 @@ async function handleCommand(args: {
         await sock.sendMessage(remoteJid, {
           text: ok ? `Technician id ${id} deleted.` : `Technician id ${id} not found.`,
         });
+        return;
+      }
+
+      if (sub === 'mapleave') {
+        try {
+          const result = autoMapLeaveScheduleNames();
+          const lines: string[] = [];
+          lines.push('*Leave mapping update completed*');
+          lines.push(`Date: ${result.dateIso}`);
+          lines.push(`Sheet: ${result.sheetName}`);
+          lines.push(`File: ${result.xlsxPath}`);
+          lines.push(`Updated: ${result.changed.length}`);
+          lines.push(`Skipped existing mapping: ${result.skippedExisting}`);
+          lines.push(`Unresolved: ${result.unresolved.length}`);
+          const byMode = result.changed.reduce(
+            (acc, item) => {
+              acc[item.mode] += 1;
+              return acc;
+            },
+            { exact: 0, pattern: 0, fuzzy: 0 }
+          );
+          lines.push(`Modes: exact=${byMode.exact}, pattern=${byMode.pattern}, fuzzy=${byMode.fuzzy}`);
+
+          if (result.changed.length > 0) {
+            lines.push('');
+            lines.push('*Updated mappings:*');
+            for (const row of result.changed.slice(0, 20)) {
+              lines.push(`- [${row.id}] ${row.ictName} => ${row.value} (${row.mode})`);
+            }
+            if (result.changed.length > 20) {
+              lines.push(`- ...and ${result.changed.length - 20} more`);
+            }
+          }
+
+          if (result.unresolved.length > 0) {
+            lines.push('');
+            lines.push('*Unresolved:*');
+            for (const row of result.unresolved.slice(0, 20)) {
+              lines.push(`- [${row.id}] ${row.ictName}`);
+            }
+            if (result.unresolved.length > 20) {
+              lines.push(`- ...and ${result.unresolved.length - 20} more`);
+            }
+          }
+
+          await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await sock.sendMessage(remoteJid, { text: `Map leave failed: ${message}` });
+        }
         return;
       }
 
