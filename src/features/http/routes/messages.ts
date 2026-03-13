@@ -111,6 +111,13 @@ function safeParseTicketState(raw: string | null): TicketState | null {
   }
 }
 
+function isClosedStatusName(value: string | null | undefined): boolean {
+  const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!v) return false;
+  const closedPrefixes = ['resolved', 'closed', 'cancelled', 'canceled'];
+  return closedPrefixes.some((prefix) => v === prefix || v.startsWith(`${prefix} `) || v.startsWith(`${prefix}-`));
+}
+
 async function loadPreviousTicketState(ticketId: string): Promise<TicketState | null> {
   const redis = getRedisClient();
   if (!redis) return inMemoryTicketState.get(ticketId) ?? null;
@@ -1108,7 +1115,12 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       const currentTechnician = requestObj.udf_fields?.udf_pick_601;
 
       let ticketStatusForMessage = ticketStatus;
+      const isClosedNow = isClosedStatusName(ticketStatusForMessage);
+      const isClosedPreviously = isClosedStatusName(previousState?.ticketStatus);
       const shouldAutoInProgress =
+        !isClosedNow &&
+        !isClosedPreviously &&
+        previousState !== null &&
         typeof currentTechnician === 'string' &&
         currentTechnician.trim().length > 0 &&
         currentTechnician !== 'ICT Helpdesk' &&

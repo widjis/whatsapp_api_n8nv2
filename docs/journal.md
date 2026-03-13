@@ -391,3 +391,8 @@
 ## [2026-03-04 13:16:34 WITA] Allow dry-run to ignore Redis ticket state
 - Change:
   - Added DISPATCHER_DRY_RUN_IGNORE_REDIS to bypass per-ticket Redis state checks in dry-run.
+
+## [2026-03-12 11:27:19 WITA] Prevent resolved tickets reverting to In Progress
+- Change:
+  - Webhook handler no longer auto-sets status to In Progress for closed tickets.
+  - Reaction claim ignores tickets already in closed statuses.
