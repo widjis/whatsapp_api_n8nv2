@@ -358,3 +358,16 @@
   - Ensure the container has a fresh XLSX immediately after restart and avoids repeated device-code prompts.
 - Impact:
   - On first boot without a token cache, device-code flow happens immediately; afterwards it runs daily at 06:00 WITA.
+
+## [2026-03-14 04:33:16 WITA] Harden SharePoint token reuse to prevent repeated device login
+- Change:
+  - Normalized OAuth scope strings and compared them as scope sets instead of strict raw string equality.
+  - Added automatic `offline_access` scope during token acquisition to obtain refresh tokens.
+  - Added refresh-token fallback path so failed refresh attempts can recover via device-code flow.
+  - Normalized persisted token-cache scope values for stable matching across restarts.
+- Reason:
+  - Existing token cache could be ignored when env scope formatting changed or when cached scope was broader than required.
+  - Missing `offline_access` caused cache entries without refresh token, forcing new interactive login after access-token expiry.
+- Impact:
+  - Existing valid cache is reused more reliably across rebuilds/restarts.
+  - After one successful login with `offline_access`, subsequent runs should refresh silently without asking for device login.

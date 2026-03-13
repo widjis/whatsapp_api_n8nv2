@@ -40,6 +40,43 @@ type TokenResponseErr = {
   correlation_id?: string;
 };
 
+function normalizeScopeString(scope: string): string {
+  const unique = Array.from(
+    new Set(
+      scope
+        .split(/\s+/)
+        .map((v) => v.trim())
+        .filter((v) => v.length > 0)
+    )
+  );
+  unique.sort((a, b) => a.localeCompare(b));
+  return unique.join(' ');
+}
+
+function ensureOfflineAccessScope(scope: string): string {
+  const parts = scope
+    .split(/\s+/)
+    .map((v) => v.trim())
+    .filter((v) => v.length > 0);
+  if (!parts.includes('offline_access')) parts.push('offline_access');
+  return normalizeScopeString(parts.join(' '));
+}
+
+function hasAllScopes(args: { cachedScope: string; requiredScope: string }): boolean {
+  const cached = new Set(
+    args.cachedScope
+      .split(/\s+/)
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0)
+  );
+  const required = args.requiredScope
+    .split(/\s+/)
+    .map((v) => v.trim())
+    .filter((v) => v.length > 0);
+  if (required.length === 0) return false;
+  return required.every((v) => cached.has(v));
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -213,32 +250,41 @@ async function refreshAccessToken(args: { tenantId: string; clientId: string; re
 }
 
 async function acquireGraphToken(args: { tenantId: string; clientId: string; scope: string; cachePath: string }): Promise<string> {
+  const requestedScope = ensureOfflineAccessScope(args.scope);
   const cached = await readTokenCache(args.cachePath);
   const now = Date.now();
-  if (cached && cached.clientId === args.clientId && cached.tenantId === args.tenantId && cached.scope === args.scope) {
+  if (
+    cached &&
+    cached.clientId === args.clientId &&
+    cached.tenantId === args.tenantId &&
+    hasAllScopes({ cachedScope: normalizeScopeString(cached.scope), requiredScope: requestedScope })
+  ) {
     if (cached.expiresAtMs - now > 60_000) return cached.accessToken;
     if (cached.refreshToken) {
-      const refreshed = await refreshAccessToken({
-        tenantId: args.tenantId,
-        clientId: args.clientId,
-        refreshToken: cached.refreshToken,
-        scope: args.scope,
-      });
-      const expiresAtMs = now + refreshed.expires_in * 1000;
-      const next: TokenCache = {
-        accessToken: refreshed.access_token,
-        refreshToken: refreshed.refresh_token ?? cached.refreshToken,
-        expiresAtMs,
-        scope: refreshed.scope,
-        tenantId: args.tenantId,
-        clientId: args.clientId,
-      };
-      await writeTokenCache(args.cachePath, next);
-      return next.accessToken;
+      try {
+        const refreshed = await refreshAccessToken({
+          tenantId: args.tenantId,
+          clientId: args.clientId,
+          refreshToken: cached.refreshToken,
+          scope: requestedScope,
+        });
+        const expiresAtMs = now + refreshed.expires_in * 1000;
+        const next: TokenCache = {
+          accessToken: refreshed.access_token,
+          refreshToken: refreshed.refresh_token ?? cached.refreshToken,
+          expiresAtMs,
+          scope: normalizeScopeString(refreshed.scope),
+          tenantId: args.tenantId,
+          clientId: args.clientId,
+        };
+        await writeTokenCache(args.cachePath, next);
+        return next.accessToken;
+      } catch {
+      }
     }
   }
 
-  const device = await requestDeviceCode({ tenantId: args.tenantId, clientId: args.clientId, scope: args.scope });
+  const device = await requestDeviceCode({ tenantId: args.tenantId, clientId: args.clientId, scope: requestedScope });
   if (device.message) {
     console.log(device.message);
   } else {
@@ -258,7 +304,7 @@ async function acquireGraphToken(args: { tenantId: string; clientId: string; sco
     accessToken: token.access_token,
     refreshToken: token.refresh_token,
     expiresAtMs,
-    scope: token.scope,
+    scope: normalizeScopeString(token.scope),
     tenantId: args.tenantId,
     clientId: args.clientId,
   };
