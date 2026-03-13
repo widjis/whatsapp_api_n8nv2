@@ -146,12 +146,30 @@ function computeNextDelayMs(args: { tzOffsetHours: number; hour: number; minute:
   return Math.max(1_000, targetUtcMs - nowUtcMs);
 }
 
+function localIsoDateForOffsetHours(offsetHours: number): string {
+  const nowUtcMs = Date.now();
+  const offsetMs = offsetHours * 60 * 60_000;
+  const nowLocal = new Date(nowUtcMs + offsetMs);
+  const y = nowLocal.getUTCFullYear();
+  const m = String(nowLocal.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(nowLocal.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+let leaveScheduleAutoDownloadInFlight = false;
+let leaveScheduleAutoDownloadLastSuccessDateIso: string | null = null;
+
 async function runLeaveScheduleAutoDownload(): Promise<void> {
+  if (leaveScheduleAutoDownloadInFlight) return;
   const shareUrl = typeof process.env.LEAVE_SCHEDULE_SHARE_URL === 'string' ? process.env.LEAVE_SCHEDULE_SHARE_URL.trim() : '';
   if (!shareUrl) return;
 
   const enabled = parseBoolean(process.env.LEAVE_SCHEDULE_AUTO_DOWNLOAD_ENABLED);
   if (enabled === false) return;
+
+  const tzOffsetHours = parseIntEnv('LEAVE_SCHEDULE_AUTO_DOWNLOAD_TZ_OFFSET_HOURS', 8);
+  const todayIso = localIsoDateForOffsetHours(tzOffsetHours);
+  if (leaveScheduleAutoDownloadLastSuccessDateIso === todayIso) return;
 
   const dataDirResolved = dataDir ?? path.join(projectRoot, 'data');
   const tenantId = process.env.MS_TENANT_ID?.trim();
@@ -171,6 +189,7 @@ async function runLeaveScheduleAutoDownload(): Promise<void> {
       ? process.env.DISPATCHER_LEAVE_SCHEDULE_XLSX_PATH.trim()
       : path.join(dataDirResolved, 'MTI - Leave Schedule (ICT Team).xlsx');
 
+  leaveScheduleAutoDownloadInFlight = true;
   try {
     const res = await downloadSharepointFileToPath({
       shareUrl,
@@ -181,10 +200,13 @@ async function runLeaveScheduleAutoDownload(): Promise<void> {
       targetPath,
     });
     await fsPromises.utimes(res.targetPath, new Date(), new Date());
+    leaveScheduleAutoDownloadLastSuccessDateIso = todayIso;
     console.log(`Leave schedule downloaded: ${res.targetPath} (${res.bytes} bytes)`);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error(`Leave schedule auto-download failed: ${message}`);
+  } finally {
+    leaveScheduleAutoDownloadInFlight = false;
   }
 }
 
@@ -198,6 +220,8 @@ function startLeaveScheduleAutoDownloadScheduler(): void {
   const tzOffsetHours = parseIntEnv('LEAVE_SCHEDULE_AUTO_DOWNLOAD_TZ_OFFSET_HOURS', 8);
   const hour = Math.min(23, Math.max(0, parseIntEnv('LEAVE_SCHEDULE_AUTO_DOWNLOAD_HOUR', 6)));
   const minute = Math.min(59, Math.max(0, parseIntEnv('LEAVE_SCHEDULE_AUTO_DOWNLOAD_MINUTE', 0)));
+
+  void runLeaveScheduleAutoDownload();
 
   const scheduleNext = () => {
     const delayMs = computeNextDelayMs({ tzOffsetHours, hour, minute });

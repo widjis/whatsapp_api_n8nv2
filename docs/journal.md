@@ -349,3 +349,12 @@
   - Keep `data/MTI - Leave Schedule (ICT Team).xlsx` up to date automatically for dispatcher filtering.
 - Impact:
   - When `LEAVE_SCHEDULE_SHARE_URL` is set (and not disabled), the container refreshes the XLSX every morning.
+
+## [2026-03-13 23:37:04 WITA] Run leave schedule download once at boot
+- Change:
+  - Triggered leave schedule auto-download once at startup before daily scheduling.
+  - Added in-flight and same-day success guards to avoid duplicate downloads.
+- Reason:
+  - Ensure the container has a fresh XLSX immediately after restart and avoids repeated device-code prompts.
+- Impact:
+  - On first boot without a token cache, device-code flow happens immediately; afterwards it runs daily at 06:00 WITA.
