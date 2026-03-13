@@ -21,6 +21,7 @@ type DispatcherConfig = {
   scanIntervalSeconds: number;
   runOnce: boolean;
   dryRun: boolean;
+  dryRunIgnoreRedisState: boolean;
   enforceTemplate: boolean;
   requiredTemplateId: string;
   requiredTemplateName: string;
@@ -200,6 +201,7 @@ function buildConfig(): DispatcherConfig {
   const scanIntervalSeconds = Math.max(10, Math.floor(parseNumberEnv('DISPATCHER_SCAN_INTERVAL_SECONDS', 300)));
   const runOnce = parseBooleanEnv('DISPATCHER_RUN_ONCE', false);
   const dryRun = parseBooleanEnv('DISPATCHER_DRY_RUN', true);
+  const dryRunIgnoreRedisState = parseBooleanEnv('DISPATCHER_DRY_RUN_IGNORE_REDIS', false);
   const enforceTemplate = parseBooleanEnv('DISPATCHER_ENFORCE_TEMPLATE', true);
   const requiredTemplateId = getOptionalEnv('DISPATCHER_REQUIRED_TEMPLATE_ID') ?? '305';
   const requiredTemplateName = getOptionalEnv('DISPATCHER_REQUIRED_TEMPLATE_NAME') ?? 'Submit a New Request';
@@ -256,6 +258,7 @@ function buildConfig(): DispatcherConfig {
     scanIntervalSeconds,
     runOnce,
     dryRun,
+    dryRunIgnoreRedisState,
     enforceTemplate,
     requiredTemplateId,
     requiredTemplateName,
@@ -696,11 +699,12 @@ async function routeTicket(config: DispatcherConfig, requestObj: ServiceDeskRequ
     const ai = safeParseAiRouteDecision(content);
     if (!ai) return heuristicWithFallback('parse_fail');
     if (ai.confidence < config.aiRoutingConfidenceThreshold) {
-      const rounded = Math.round(ai.confidence * 100) / 100;
+      const conf = Math.round(ai.confidence * 1000) / 1000;
+      const threshold = Math.round(config.aiRoutingConfidenceThreshold * 1000) / 1000;
       return {
         routeKey: 'triage',
         targetGroupName: mapRouteKeyToGroup(config, 'triage'),
-        reason: `ai_low_conf(${rounded})|triage`,
+        reason: `ai_low_conf(conf=${conf},th=${threshold})|triage`,
       };
     }
     return {
@@ -1055,6 +1059,8 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
   const assignmentLogs: AssignmentLogItem[] = [];
   const reminderLogs: ReminderLogItem[] = [];
 
+  const shouldUseTicketState = !(config.dryRun && config.dryRunIgnoreRedisState);
+
   for (const requestObj of requests) {
     if (isClosedStatus(config, requestObj)) {
       stats.skipped += 1;
@@ -1076,7 +1082,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
       continue;
     }
 
-    const state = await loadTicketState(ticketId);
+    const state = shouldUseTicketState ? await loadTicketState(ticketId) : null;
 
     if (config.reminderMode !== 'none' && remindersLeft > 0) {
       const isGroupMissing = existingGroup.length === 0 && existingSdpGroup.length === 0;
@@ -1142,15 +1148,17 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
             const res = await sendDirectNotifications({ config, phones: reminderPhones, message: msg });
             if (res.sent > 0) {
               remindersLeft -= 1;
-              await saveTicketState({
-                ticketId,
-                lastActionAtIso: state?.lastActionAtIso,
-                lastAssignedGroupName: state?.lastAssignedGroupName ?? null,
-                lastAssignedIctTechnician: state?.lastAssignedIctTechnician ?? null,
-                lastNotifiedHash: state?.lastNotifiedHash ?? null,
-                lastReminderAtIso: new Date().toISOString(),
-                lastReminderHash: reminderHash,
-              });
+              if (shouldUseTicketState) {
+                await saveTicketState({
+                  ticketId,
+                  lastActionAtIso: state?.lastActionAtIso,
+                  lastAssignedGroupName: state?.lastAssignedGroupName ?? null,
+                  lastAssignedIctTechnician: state?.lastAssignedIctTechnician ?? null,
+                  lastNotifiedHash: state?.lastNotifiedHash ?? null,
+                  lastReminderAtIso: new Date().toISOString(),
+                  lastReminderHash: reminderHash,
+                });
+              }
             }
           }
         }
@@ -1180,11 +1188,13 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
         shouldEnforceTemplate &&
         (existingTemplate.length === 0 || existingTemplate.toLowerCase() !== config.requiredTemplateName.trim().toLowerCase());
 
+      const ignoreLastAssigned = !shouldUseTicketState;
       const hasGroupChange =
         typeof action.targetGroupName === 'string' &&
         action.targetGroupName.trim().length > 0 &&
         existingGroup.toLowerCase() !== action.targetGroupName.toLowerCase() &&
         (existingGroup.length === 0 ||
+          ignoreLastAssigned ||
           !state?.lastAssignedGroupName ||
           state.lastAssignedGroupName.toLowerCase() !== action.targetGroupName.toLowerCase());
 
@@ -1193,6 +1203,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
         action.targetIctTechnician.trim().length > 0 &&
         existingIct.toLowerCase() !== action.targetIctTechnician.toLowerCase() &&
         (existingIct.length === 0 ||
+          ignoreLastAssigned ||
           !state?.lastAssignedIctTechnician ||
           state.lastAssignedIctTechnician.toLowerCase() !== action.targetIctTechnician.toLowerCase());
 
@@ -1202,23 +1213,25 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
         continue;
       }
 
-      const sinceLastActionHours = hoursSinceIso(state?.lastActionAtIso);
-      const inManualBackoff =
-        config.manualOverrideBackoffHours > 0 &&
-        typeof sinceLastActionHours === 'number' &&
-        Number.isFinite(sinceLastActionHours) &&
-        sinceLastActionHours < config.manualOverrideBackoffHours;
-      const groupManualOverride =
-        !!state?.lastAssignedGroupName &&
-        !!existingGroup &&
-        existingGroup.toLowerCase() !== state.lastAssignedGroupName.toLowerCase();
-      const ictManualOverride =
-        !!state?.lastAssignedIctTechnician &&
-        !!existingIct &&
-        existingIct.toLowerCase() !== state.lastAssignedIctTechnician.toLowerCase();
-      if (inManualBackoff && ((groupManualOverride && hasGroupChange) || (ictManualOverride && hasIctChange))) {
-        stats.skipped += 1;
-        continue;
+      if (shouldUseTicketState) {
+        const sinceLastActionHours = hoursSinceIso(state?.lastActionAtIso);
+        const inManualBackoff =
+          config.manualOverrideBackoffHours > 0 &&
+          typeof sinceLastActionHours === 'number' &&
+          Number.isFinite(sinceLastActionHours) &&
+          sinceLastActionHours < config.manualOverrideBackoffHours;
+        const groupManualOverride =
+          !!state?.lastAssignedGroupName &&
+          !!existingGroup &&
+          existingGroup.toLowerCase() !== state.lastAssignedGroupName.toLowerCase();
+        const ictManualOverride =
+          !!state?.lastAssignedIctTechnician &&
+          !!existingIct &&
+          existingIct.toLowerCase() !== state.lastAssignedIctTechnician.toLowerCase();
+        if (inManualBackoff && ((groupManualOverride && hasGroupChange) || (ictManualOverride && hasIctChange))) {
+          stats.skipped += 1;
+          continue;
+        }
       }
 
       const toGroup = hasGroupChange ? normalizeText(action.targetGroupName) : existingGroup;
@@ -1319,7 +1332,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
       assignmentsLeft -= 1;
       stats.assigned += 1;
 
-      if (hasAssignmentChange) {
+      if (hasAssignmentChange && shouldUseTicketState) {
         await saveTicketState({
           ticketId: action.ticketId,
           lastActionAtIso: new Date().toISOString(),
@@ -1367,7 +1380,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
       const notificationHash = computeNotificationHash(
         `update|${action.ticketId}|${action.targetGroupName ?? ''}|${action.targetIctTechnician ?? ''}|${reason}`
       );
-      if (state?.lastNotifiedHash === notificationHash) continue;
+      if (shouldUseTicketState && state?.lastNotifiedHash === notificationHash) continue;
 
       const msg = buildNotificationMessage({
         ticketId: action.ticketId,
@@ -1386,15 +1399,17 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
         if (res.sent > 0) {
           stats.notified += 1;
           notificationsLeft -= 1;
-          await saveTicketState({
-            ticketId: action.ticketId,
-            lastActionAtIso: new Date().toISOString(),
-            lastAssignedGroupName: hasGroupChange ? action.targetGroupName ?? null : state?.lastAssignedGroupName ?? null,
-            lastAssignedIctTechnician: hasIctChange ? action.targetIctTechnician ?? null : state?.lastAssignedIctTechnician ?? null,
-            lastNotifiedHash: notificationHash,
-            lastReminderAtIso: state?.lastReminderAtIso ?? null,
-            lastReminderHash: state?.lastReminderHash ?? null,
-          });
+          if (shouldUseTicketState) {
+            await saveTicketState({
+              ticketId: action.ticketId,
+              lastActionAtIso: new Date().toISOString(),
+              lastAssignedGroupName: hasGroupChange ? action.targetGroupName ?? null : state?.lastAssignedGroupName ?? null,
+              lastAssignedIctTechnician: hasIctChange ? action.targetIctTechnician ?? null : state?.lastAssignedIctTechnician ?? null,
+              lastNotifiedHash: notificationHash,
+              lastReminderAtIso: state?.lastReminderAtIso ?? null,
+              lastReminderHash: state?.lastReminderHash ?? null,
+            });
+          }
         }
       }
       continue;
@@ -1414,7 +1429,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
       const subject = normalizeText(requestObj.subject);
 
       const notificationHash = computeNotificationHash(`notify_group|${action.ticketId}|${action.targetGroupName}|${action.reason}`);
-      if (state?.lastNotifiedHash === notificationHash) continue;
+      if (shouldUseTicketState && state?.lastNotifiedHash === notificationHash) continue;
 
       const msg = buildNotificationMessage({
         ticketId: action.ticketId,
@@ -1433,15 +1448,17 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
         if (res.sent > 0) {
           stats.notified += 1;
           notificationsLeft -= 1;
-          await saveTicketState({
-            ticketId: action.ticketId,
-            lastActionAtIso: new Date().toISOString(),
-            lastAssignedGroupName: state?.lastAssignedGroupName ?? null,
-            lastAssignedIctTechnician: state?.lastAssignedIctTechnician ?? null,
-            lastNotifiedHash: notificationHash,
-            lastReminderAtIso: state?.lastReminderAtIso ?? null,
-            lastReminderHash: state?.lastReminderHash ?? null,
-          });
+          if (shouldUseTicketState) {
+            await saveTicketState({
+              ticketId: action.ticketId,
+              lastActionAtIso: new Date().toISOString(),
+              lastAssignedGroupName: state?.lastAssignedGroupName ?? null,
+              lastAssignedIctTechnician: state?.lastAssignedIctTechnician ?? null,
+              lastNotifiedHash: notificationHash,
+              lastReminderAtIso: state?.lastReminderAtIso ?? null,
+              lastReminderHash: state?.lastReminderHash ?? null,
+            });
+          }
         }
       }
       continue;
@@ -1517,6 +1534,7 @@ export function startHelpdeskDispatcher(): { stop: () => void } {
             enforceTemplate: config.enforceTemplate,
             requiredTemplateName: config.requiredTemplateName,
             requiredTemplateId: config.requiredTemplateId,
+            dryRunIgnoreRedisState: config.dryRunIgnoreRedisState,
             minAgeHours: config.minAgeHours,
             maxAgeHours: config.maxAgeHours,
             maxTicketsPerRun: config.maxTicketsPerRun,

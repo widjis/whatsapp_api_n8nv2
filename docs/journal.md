@@ -383,3 +383,11 @@
 - Change:
   - Dispatcher considers request.technician.name as the assignment marker.
   - If technician is empty but group exists, dispatcher mirrors group into technician and assigns ICT by load.
+
+## [2026-03-04 12:33:36 WITA] Include AI confidence details in low-confidence reasons
+- Change:
+  - ai_low_conf reasons now include confidence and threshold values for later evaluation.
+
+## [2026-03-04 13:16:34 WITA] Allow dry-run to ignore Redis ticket state
+- Change:
+  - Added DISPATCHER_DRY_RUN_IGNORE_REDIS to bypass per-ticket Redis state checks in dry-run.
