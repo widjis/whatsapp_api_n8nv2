@@ -5,6 +5,7 @@ export type TechnicianContact = {
   id: number;
   name: string;
   ict_name: string;
+  leave_schedule_name?: string | null;
   phone: string;
   email: string | null;
   technician: string;
@@ -13,7 +14,14 @@ export type TechnicianContact = {
 
 export type TechnicianContactInput = Omit<TechnicianContact, 'id'>;
 
-export type TechnicianContactUpdateField = 'name' | 'ict_name' | 'phone' | 'email' | 'technician' | 'gender';
+export type TechnicianContactUpdateField =
+  | 'name'
+  | 'ict_name'
+  | 'leave_schedule_name'
+  | 'phone'
+  | 'email'
+  | 'technician'
+  | 'gender';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -49,6 +57,9 @@ function parseContact(raw: unknown, fallbackId: number): TechnicianContact | nul
 
   const name = typeof raw.name === 'string' ? raw.name : '';
   const ictName = typeof raw.ict_name === 'string' ? raw.ict_name : '';
+  const leaveScheduleNameRaw = raw.leave_schedule_name;
+  const leaveScheduleName =
+    typeof leaveScheduleNameRaw === 'string' ? leaveScheduleNameRaw : leaveScheduleNameRaw === null ? null : undefined;
   const phoneRaw = typeof raw.phone === 'string' ? raw.phone : '';
   const phone = normalizeTechnicianPhoneNumber(phoneRaw);
 
@@ -65,6 +76,7 @@ function parseContact(raw: unknown, fallbackId: number): TechnicianContact | nul
     id,
     name,
     ict_name: ictName,
+    leave_schedule_name: leaveScheduleName,
     phone,
     email,
     technician,
@@ -121,7 +133,7 @@ export function searchTechnicianContacts(query: string): TechnicianContact[] {
   if (!q) return [];
 
   return listTechnicianContacts().filter((c) => {
-    const hay = [c.name, c.ict_name, c.phone, c.email ?? '', c.technician, c.gender ?? '']
+    const hay = [c.name, c.ict_name, c.leave_schedule_name ?? '', c.phone, c.email ?? '', c.technician, c.gender ?? '']
       .join(' ')
       .toLowerCase();
     return hay.includes(q);
@@ -165,6 +177,7 @@ export function addTechnicianContact(input: TechnicianContactInput): TechnicianC
     id: nextId,
     name: input.name,
     ict_name: input.ict_name,
+    leave_schedule_name: input.leave_schedule_name,
     phone: normalizeTechnicianPhoneNumber(input.phone),
     email: input.email,
     technician: input.technician,
@@ -192,6 +205,9 @@ export function updateTechnicianContact(
     next.name = value;
   } else if (field === 'ict_name') {
     next.ict_name = value;
+  } else if (field === 'leave_schedule_name') {
+    const trimmed = value.trim();
+    next.leave_schedule_name = trimmed.toLowerCase() === 'null' || trimmed === '-' || trimmed === '' ? null : trimmed;
   } else if (field === 'technician') {
     next.technician = value;
   } else if (field === 'phone') {

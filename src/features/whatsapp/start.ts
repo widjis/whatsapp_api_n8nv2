@@ -1655,10 +1655,12 @@ function formatTwoColumnRows(rows: Array<{ label: string; value: string }>): str
 function renderTechnicianDetails(c: TechnicianContact): string {
   const email = c.email ?? 'N/A';
   const gender = c.gender ?? 'N/A';
+  const leaveScheduleName = c.leave_schedule_name ?? 'N/A';
   const rows = formatTwoColumnRows([
     { label: 'ID', value: String(c.id) },
     { label: 'Name', value: c.name },
     { label: 'ICT Name', value: c.ict_name },
+    { label: 'Leave Schedule', value: leaveScheduleName },
     { label: 'Role', value: c.technician },
     { label: 'Phone', value: c.phone },
     { label: 'Email', value: email },
@@ -1692,6 +1694,7 @@ function isUpdateField(value: string): value is TechnicianContactUpdateField {
   return (
     value === 'name' ||
     value === 'ict_name' ||
+    value === 'leave_schedule_name' ||
     value === 'phone' ||
     value === 'email' ||
     value === 'technician' ||
@@ -2125,7 +2128,7 @@ async function handleCommand(args: {
 
         if (!Number.isFinite(id) || !fieldRaw || !value || !isUpdateField(fieldRaw)) {
           await sock.sendMessage(remoteJid, {
-            text: 'Usage: /technician update <id> "field" "value" (fields: name, ict_name, phone, email, technician, gender)',
+            text: 'Usage: /technician update <id> "field" "value" (fields: name, ict_name, leave_schedule_name, phone, email, technician, gender)',
           });
           return;
         }

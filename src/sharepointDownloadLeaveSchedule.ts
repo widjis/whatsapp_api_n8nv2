@@ -2,6 +2,7 @@ import 'dotenv/config';
 import axios from 'axios';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 type TokenCache = {
   accessToken: string;
@@ -78,6 +79,10 @@ function toBase64Url(input: string): string {
 
 function shareUrlToShareId(url: string): string {
   return `u!${toBase64Url(url)}`;
+}
+
+export function resolveDataDir(): string {
+  return getDataDir();
 }
 
 async function readTokenCache(cachePath: string): Promise<TokenCache | null> {
@@ -278,6 +283,70 @@ async function downloadDriveItemFromShareUrl(args: { shareUrl: string; token: st
   return { buf: Buffer.from(contentRes.data), name, webUrl };
 }
 
+export type SharepointDownloadResult = {
+  buf: Buffer;
+  name: string | null;
+  webUrl: string | null;
+};
+
+export async function downloadSharepointFile(args: {
+  shareUrl: string;
+  tenantId: string;
+  clientId: string;
+  scope: string;
+  tokenCachePath: string;
+}): Promise<SharepointDownloadResult> {
+  const token = await acquireGraphToken({
+    tenantId: args.tenantId,
+    clientId: args.clientId,
+    scope: args.scope,
+    cachePath: args.tokenCachePath,
+  });
+  const { buf, name, webUrl } = await downloadDriveItemFromShareUrl({ shareUrl: args.shareUrl.trim(), token });
+  return { buf, name: typeof name === 'string' ? name : null, webUrl: typeof webUrl === 'string' ? webUrl : null };
+}
+
+function looksLikeXlsx(buf: Buffer): boolean {
+  if (buf.length < 4) return false;
+  return buf[0] === 0x50 && buf[1] === 0x4b;
+}
+
+export async function writeFileAtomic(args: { targetPath: string; content: Buffer }): Promise<void> {
+  const dir = path.dirname(args.targetPath);
+  await fs.mkdir(dir, { recursive: true });
+  const tmpPath = `${args.targetPath}.tmp`;
+  await fs.writeFile(tmpPath, args.content);
+  await fs.rename(tmpPath, args.targetPath);
+}
+
+export async function downloadSharepointFileToPath(args: {
+  shareUrl: string;
+  tenantId: string;
+  clientId: string;
+  scope: string;
+  tokenCachePath: string;
+  targetPath: string;
+}): Promise<{ targetPath: string; webUrl: string | null; sourceName: string | null; bytes: number }> {
+  const result = await downloadSharepointFile({
+    shareUrl: args.shareUrl,
+    tenantId: args.tenantId,
+    clientId: args.clientId,
+    scope: args.scope,
+    tokenCachePath: args.tokenCachePath,
+  });
+
+  if (!looksLikeXlsx(result.buf)) throw new Error('Downloaded file does not look like an XLSX');
+
+  await writeFileAtomic({ targetPath: args.targetPath, content: result.buf });
+
+  return {
+    targetPath: args.targetPath,
+    webUrl: result.webUrl,
+    sourceName: result.name,
+    bytes: result.buf.length,
+  };
+}
+
 async function main(): Promise<void> {
   const shareUrl = process.argv[2];
   if (typeof shareUrl !== 'string' || shareUrl.trim().length === 0) {
@@ -294,17 +363,32 @@ async function main(): Promise<void> {
   const dataDir = getDataDir();
   const cachePath = path.join(dataDir, 'sharepoint_token_cache.json');
 
-  const token = await acquireGraphToken({ tenantId, clientId, scope, cachePath });
-  const { buf, name, webUrl } = await downloadDriveItemFromShareUrl({ shareUrl: shareUrl.trim(), token });
-
   await fs.mkdir(dataDir, { recursive: true });
-  const outName = typeof name === 'string' && name.trim().length > 0 ? name.trim() : 'leave_schedule.xlsx';
-  const outPath = path.join(dataDir, outName);
-  await fs.writeFile(outPath, buf);
+  const outPath = path.join(dataDir, 'leave_schedule.xlsx');
+  const res = await downloadSharepointFileToPath({
+    shareUrl: shareUrl.trim(),
+    tenantId,
+    clientId,
+    scope,
+    tokenCachePath: cachePath,
+    targetPath: outPath,
+  });
 
   console.log('DOWNLOAD_OK');
-  console.log(`Path: ${outPath}`);
-  if (webUrl) console.log(`WebUrl: ${webUrl}`);
+  console.log(`Path: ${res.targetPath}`);
+  if (res.webUrl) console.log(`WebUrl: ${res.webUrl}`);
 }
 
-await main();
+const isDirectRun = (() => {
+  try {
+    const entry = typeof process.argv[1] === 'string' ? process.argv[1] : '';
+    if (!entry) return false;
+    return path.resolve(entry) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+
+if (isDirectRun) {
+  await main();
+}

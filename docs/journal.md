@@ -323,3 +323,29 @@
 ## [2026-02-25 14:49:11 WIB] Upgrade Baileys to latest
 - Change:
   - Upgraded `@whiskeysockets/baileys` to `7.0.0-rc.9` and updated lockfile.
+
+## [2026-03-13 22:58:10 WITA] Ignore data directory from git
+- Change:
+  - Updated `.gitignore` to ignore `data/`.
+
+## [2026-03-13 23:10:13 WITA] Integrate leave schedule mapping and dispatcher filtering
+- Change:
+  - Added `leave_schedule_name` field support in technician contacts for explicit Excel name mapping.
+  - Updated `/technician` details and update help text to include `leave_schedule_name`.
+  - Integrated leave schedule filtering into dispatcher ICT selection (only onsite technicians are eligible).
+  - Added dispatcher env configuration for leave schedule XLSX path, sheet, timezone, and fuzzy matching.
+- Reason:
+  - Excel names and internal ICT technician names differ; a stable mapping is required for reliable matching.
+  - Prevent assigning tickets to technicians that are offsite/on leave according to the crew schedule.
+- Impact:
+  - Dispatcher can exclude offsite technicians when `DISPATCHER_LEAVE_SCHEDULE_ENABLED=true`.
+  - Operators can maintain mappings directly in `data/technicianContacts.json` (or via `/technician update`).
+
+## [2026-03-13 23:22:25 WITA] Schedule daily leave schedule auto-download in Docker runtime
+- Change:
+  - Refactored SharePoint downloader into importable functions with safe direct-run guard.
+  - Added daily 06:00 WITA auto-download scheduler to refresh the XLSX via SharePoint and atomic swap.
+- Reason:
+  - Keep `data/MTI - Leave Schedule (ICT Team).xlsx` up to date automatically for dispatcher filtering.
+- Impact:
+  - When `LEAVE_SCHEDULE_SHARE_URL` is set (and not disabled), the container refreshes the XLSX every morning.

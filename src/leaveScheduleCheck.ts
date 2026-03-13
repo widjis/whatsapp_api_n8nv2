@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import XLSX from 'xlsx';
 import type { WorkSheet } from 'xlsx';
 
@@ -30,6 +31,22 @@ function parseEnvPath(raw: string | undefined): string | null {
 
 function normalizeName(s: string): string {
   return s.trim().replace(/\s+/g, ' ').toUpperCase();
+}
+
+export type LeaveScheduleEntry = {
+  status: string | null;
+  onsite: boolean;
+};
+
+export type LeaveScheduleMatch = {
+  matchedKey: string;
+  entry: LeaveScheduleEntry;
+};
+
+export function normalizeScheduleBaseName(input: string): string {
+  const withoutParen = input.replace(/\([^)]*\)/g, ' ');
+  const cleaned = withoutParen.replace(/[^A-Za-z0-9]+/g, ' ').trim();
+  return normalizeName(cleaned);
 }
 
 function isOnsite(status: unknown): boolean {
@@ -65,6 +82,10 @@ function todayTzOffsetUtcDate(offsetHours: number): Date {
   return new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate(), 0, 0, 0, 0));
 }
 
+export function getTodayIsoDateForOffsetHours(offsetHours: number): string {
+  return isoDateUtc(todayTzOffsetUtcDate(offsetHours));
+}
+
 function toDateFromCell(value: unknown): Date | null {
   if (value instanceof Date) return value;
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -83,6 +104,23 @@ function addDaysUtc(d: Date, days: number): Date {
   return new Date(d.getTime() + days * 24 * 60 * 60_000);
 }
 
+function tokenizeKey(key: string): string[] {
+  return key.split(' ').filter((t) => t.trim().length > 0);
+}
+
+function jaccardSimilarity(aTokens: string[], bTokens: string[]): number {
+  const a = new Set(aTokens);
+  const b = new Set(bTokens);
+  if (a.size === 0 && b.size === 0) return 1;
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const t of a) {
+    if (b.has(t)) inter += 1;
+  }
+  const union = a.size + b.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
 function getRows(sheet: WorkSheet): unknown[][] {
   const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null }) as unknown;
   if (!Array.isArray(raw)) return [];
@@ -98,6 +136,7 @@ function findPersonContext(args: { rows: unknown[][]; name: string; dateHeaderRo
   if (!Array.isArray(dateRow)) throw new Error(`Date header row not found at ${args.dateHeaderRow1Based}`);
 
   const target = normalizeName(args.name);
+  const targetBase = normalizeScheduleBaseName(args.name);
   let best: { rowIndex1Based: number; personName: string; rowValues: unknown[] } | null = null;
 
   const maxRow = Math.min(args.rows.length, args.dataStartRow1Based - 1 + 500);
@@ -108,7 +147,11 @@ function findPersonContext(args: { rows: unknown[][]; name: string; dateHeaderRo
     const personName = typeof personRaw === 'string' ? personRaw.trim() : String(personRaw ?? '').trim();
     if (!personName) continue;
     const normalized = normalizeName(personName);
+    const personBase = normalizeScheduleBaseName(personName);
     if (normalized === target) {
+      return { rowIndex1Based: rowIdx0 + 1, personName, rowValues: row, dateRow };
+    }
+    if (personBase && targetBase && personBase === targetBase) {
       return { rowIndex1Based: rowIdx0 + 1, personName, rowValues: row, dateRow };
     }
     if (normalized.includes(target) && best === null) {
@@ -128,6 +171,86 @@ function findColByDate(dateRow: unknown[], dUtc: Date, dateShiftDays: number): n
     if (isoDateUtc(scheduleDate) === isoDateUtc(dUtc)) return c0 + 1;
   }
   return null;
+}
+
+export function buildLeaveScheduleIndexForDate(args: {
+  xlsxPath: string;
+  sheetName: string;
+  dateIsoYyyyMmDd: string;
+  dateHeaderRow1Based: number;
+  dataStartRow1Based: number;
+  dateShiftDays: number;
+}): Map<string, LeaveScheduleEntry> {
+  if (!fs.existsSync(args.xlsxPath)) throw new Error(`XLSX not found: ${args.xlsxPath}`);
+  const dUtc = parseYyyyMmDd(args.dateIsoYyyyMmDd);
+  if (!dUtc) throw new Error(`Invalid date (expected YYYY-MM-DD): ${args.dateIsoYyyyMmDd}`);
+
+  const workbook = XLSX.readFile(args.xlsxPath, { cellDates: true });
+  const sheet = workbook.Sheets[args.sheetName];
+  if (!sheet) throw new Error(`Sheet not found: ${args.sheetName}`);
+
+  const rows = getRows(sheet);
+  const dateRow = rows[args.dateHeaderRow1Based - 1];
+  if (!Array.isArray(dateRow)) throw new Error(`Date header row not found at ${args.dateHeaderRow1Based}`);
+
+  const col = findColByDate(dateRow, dUtc, args.dateShiftDays);
+  if (!col) throw new Error(`Date not found in schedule: ${isoDateUtc(dUtc)}`);
+
+  const out = new Map<string, LeaveScheduleEntry>();
+  const maxRow = Math.min(rows.length, args.dataStartRow1Based - 1 + 500);
+  for (let rowIdx0 = args.dataStartRow1Based - 1; rowIdx0 < maxRow; rowIdx0 += 1) {
+    const row = rows[rowIdx0];
+    if (!Array.isArray(row)) continue;
+    const personRaw = row[2];
+    const personName = typeof personRaw === 'string' ? personRaw.trim() : String(personRaw ?? '').trim();
+    if (!personName) continue;
+
+    const key = normalizeScheduleBaseName(personName);
+    if (!key) continue;
+    if (out.has(key)) continue;
+
+    const statusRaw = row[col - 1];
+    const status = typeof statusRaw === 'string' ? (statusRaw.trim().length > 0 ? statusRaw.trim() : null) : null;
+    out.set(key, { status, onsite: isOnsite(status) });
+  }
+
+  return out;
+}
+
+export function resolveLeaveScheduleEntry(args: {
+  scheduleIndex: Map<string, LeaveScheduleEntry>;
+  personName: string;
+  allowFuzzy: boolean;
+  similarityThreshold: number;
+}): LeaveScheduleMatch | null {
+  const key = normalizeScheduleBaseName(args.personName);
+  if (!key) return null;
+  const exact = args.scheduleIndex.get(key);
+  if (exact) return { matchedKey: key, entry: exact };
+  if (!args.allowFuzzy) return null;
+
+  const targetTokens = tokenizeKey(key);
+  let bestKey: string | null = null;
+  let bestScore = 0;
+  let bestCount = 0;
+
+  for (const candidateKey of args.scheduleIndex.keys()) {
+    const candidateTokens = tokenizeKey(candidateKey);
+    const score = jaccardSimilarity(targetTokens, candidateTokens);
+    if (score > bestScore) {
+      bestScore = score;
+      bestKey = candidateKey;
+      bestCount = 1;
+    } else if (score === bestScore && score > 0) {
+      bestCount += 1;
+    }
+  }
+
+  if (!bestKey) return null;
+  if (bestScore < args.similarityThreshold) return null;
+  if (bestCount > 1) return null;
+  const entry = args.scheduleIndex.get(bestKey);
+  return entry ? { matchedKey: bestKey, entry } : null;
 }
 
 function modeToday(ctx: LeaveContext, dUtc: Date, dateShiftDays: number): unknown {
@@ -258,4 +381,16 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(result, null, 2));
 }
 
-await main();
+const isDirectRun = (() => {
+  try {
+    const entry = typeof process.argv[1] === 'string' ? process.argv[1] : '';
+    if (!entry) return false;
+    return path.resolve(entry) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+
+if (isDirectRun) {
+  await main();
+}

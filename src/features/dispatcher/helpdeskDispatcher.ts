@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { Redis as IORedis } from 'ioredis';
 import crypto from 'node:crypto';
+import path from 'node:path';
 import OpenAI from 'openai';
 import {
   getAllRequests,
@@ -13,6 +14,11 @@ import {
   listTechnicianContacts,
   type TechnicianContact,
 } from '../integrations/technicianContacts.js';
+import {
+  buildLeaveScheduleIndexForDate,
+  getTodayIsoDateForOffsetHours,
+  resolveLeaveScheduleEntry,
+} from '../../leaveScheduleCheck.js';
 
 type NotifyMode = 'none' | 'direct' | 'digest';
 
@@ -61,7 +67,23 @@ type DispatcherConfig = {
   };
   closedStatuses: string[];
   lockTtlSeconds: number;
+  leaveScheduleEnabled: boolean;
+  leaveScheduleXlsxPath: string;
+  leaveScheduleSheetName: string;
+  leaveScheduleTzOffsetHours: number;
+  leaveScheduleDateShiftDays: number;
+  leaveScheduleAllowFuzzy: boolean;
+  leaveScheduleSimilarityThreshold: number;
 };
+
+type LeaveStatus = {
+  found: boolean;
+  onsite: boolean;
+  status: string | null;
+  matchedKey: string | null;
+};
+
+type LeaveStatusByIctName = Map<string, LeaveStatus>;
 
 type DispatcherTicketState = {
   ticketId: string;
@@ -246,6 +268,16 @@ function buildConfig(): DispatcherConfig {
 
   const lockTtlSeconds = Math.max(30, Math.floor(parseNumberEnv('DISPATCHER_LOCK_TTL_SECONDS', 90)));
 
+  const leaveScheduleEnabled = parseBooleanEnv('DISPATCHER_LEAVE_SCHEDULE_ENABLED', false);
+  const dataDir = process.env.DATA_DIR && process.env.DATA_DIR.trim().length > 0 ? process.env.DATA_DIR.trim() : path.resolve(process.cwd(), 'data');
+  const leaveScheduleXlsxPath =
+    getOptionalEnv('DISPATCHER_LEAVE_SCHEDULE_XLSX_PATH') ?? path.join(dataDir, 'MTI - Leave Schedule (ICT Team).xlsx');
+  const leaveScheduleSheetName = getOptionalEnv('DISPATCHER_LEAVE_SCHEDULE_SHEET') ?? 'Human Resource';
+  const leaveScheduleTzOffsetHours = Math.floor(parseNumberEnv('DISPATCHER_LEAVE_SCHEDULE_TZ_OFFSET_HOURS', 8));
+  const leaveScheduleDateShiftDays = Math.floor(parseNumberEnv('DISPATCHER_LEAVE_SCHEDULE_DATE_SHIFT_DAYS', 1));
+  const leaveScheduleAllowFuzzy = parseBooleanEnv('DISPATCHER_LEAVE_SCHEDULE_FUZZY', true);
+  const leaveScheduleSimilarityThreshold = Math.min(1, Math.max(0, parseNumberEnv('DISPATCHER_LEAVE_SCHEDULE_SIM_THRESHOLD', 0.9)));
+
   const groupNames = {
     docControl: getOptionalEnv('DISPATCHER_GROUP_DOC_CONTROL') ?? 'Document Control',
     itSupport: getOptionalEnv('DISPATCHER_GROUP_IT_SUPPORT') ?? 'IT Support',
@@ -293,6 +325,13 @@ function buildConfig(): DispatcherConfig {
     groupNames,
     closedStatuses,
     lockTtlSeconds,
+    leaveScheduleEnabled,
+    leaveScheduleXlsxPath,
+    leaveScheduleSheetName,
+    leaveScheduleTzOffsetHours,
+    leaveScheduleDateShiftDays,
+    leaveScheduleAllowFuzzy,
+    leaveScheduleSimilarityThreshold,
   };
 }
 
@@ -739,6 +778,7 @@ function pickIctTechnicianByLoad(args: {
   groupName: string;
   contacts: TechnicianContact[];
   loadByGroupIct: Map<string, Map<string, number>>;
+  leaveStatusByIctName: LeaveStatusByIctName | null;
 }): TechnicianContact | null {
   const groupContacts = resolveContactsForGroup({ targetGroupName: args.groupName, contacts: args.contacts });
   if (groupContacts.length === 0) return null;
@@ -751,6 +791,10 @@ function pickIctTechnicianByLoad(args: {
 
   for (const c of groupContacts) {
     if (args.config.ictExclude.has(c.ict_name)) continue;
+    if (args.leaveStatusByIctName) {
+      const leave = args.leaveStatusByIctName.get(c.ict_name);
+      if (!leave || !leave.found || !leave.onsite) continue;
+    }
     const load = loadByIctTechnician.get(c.ict_name) ?? 0;
     const maxOpen = args.config.ictMaxOpenByName.get(c.ict_name);
     if (typeof maxOpen === 'number' && Number.isFinite(maxOpen) && load >= maxOpen) continue;
@@ -949,8 +993,9 @@ async function planAction(args: {
   requestObj: ServiceDeskRequest;
   contacts: TechnicianContact[];
   loadByGroupIct: Map<string, Map<string, number>>;
+  leaveStatusByIctName: LeaveStatusByIctName | null;
 }): Promise<PlannedAction> {
-  const { config, requestObj, contacts, loadByGroupIct } = args;
+  const { config, requestObj, contacts, loadByGroupIct, leaveStatusByIctName } = args;
   const ticketId = requestObj.id;
   const assignedGroupName = normalizeText(requestObj.technician?.name);
   const sdpGroupName = normalizeText(requestObj.group?.name);
@@ -978,7 +1023,7 @@ async function planAction(args: {
 
   if (isGroupMissing) {
     if (sdpGroupName) {
-      const picked = pickIctTechnicianByLoad({ config, ticketId, groupName: sdpGroupName, contacts, loadByGroupIct });
+      const picked = pickIctTechnicianByLoad({ config, ticketId, groupName: sdpGroupName, contacts, loadByGroupIct, leaveStatusByIctName });
       return {
         kind: 'update',
         ticketId,
@@ -990,7 +1035,7 @@ async function planAction(args: {
     }
 
     const decision = await routeTicket(config, requestObj);
-    const picked = pickIctTechnicianByLoad({ config, ticketId, groupName: decision.targetGroupName, contacts, loadByGroupIct });
+    const picked = pickIctTechnicianByLoad({ config, ticketId, groupName: decision.targetGroupName, contacts, loadByGroupIct, leaveStatusByIctName });
     const notify = config.notifyMode === 'direct';
     return {
       kind: 'update',
@@ -1003,7 +1048,7 @@ async function planAction(args: {
   }
 
   if (isIctTechnicianMissing && groupName) {
-    const picked = pickIctTechnicianByLoad({ config, ticketId, groupName, contacts, loadByGroupIct });
+    const picked = pickIctTechnicianByLoad({ config, ticketId, groupName, contacts, loadByGroupIct, leaveStatusByIctName });
     if (picked) return { kind: 'update', ticketId, targetIctTechnician: picked.ict_name, reason: 'assign_ict_by_load', notify: false };
   }
 
@@ -1018,6 +1063,46 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
   const stats: ScanStats = { scanned: 0, matched: 0, assigned: 0, notified: 0, skipped: 0, errors: 0 };
 
   const contacts = listTechnicianContacts();
+  let leaveStatusByIctName: LeaveStatusByIctName | null = null;
+  if (config.leaveScheduleEnabled) {
+    try {
+      const dateIso = getTodayIsoDateForOffsetHours(config.leaveScheduleTzOffsetHours);
+      const scheduleIndex = buildLeaveScheduleIndexForDate({
+        xlsxPath: config.leaveScheduleXlsxPath,
+        sheetName: config.leaveScheduleSheetName,
+        dateIsoYyyyMmDd: dateIso,
+        dateHeaderRow1Based: 9,
+        dataStartRow1Based: 10,
+        dateShiftDays: config.leaveScheduleDateShiftDays,
+      });
+
+      const byIct: LeaveStatusByIctName = new Map<string, LeaveStatus>();
+      for (const c of contacts) {
+        const nameForSchedule = c.leave_schedule_name ?? c.ict_name ?? c.name;
+        const match = resolveLeaveScheduleEntry({
+          scheduleIndex,
+          personName: nameForSchedule,
+          allowFuzzy: config.leaveScheduleAllowFuzzy,
+          similarityThreshold: config.leaveScheduleSimilarityThreshold,
+        });
+        if (!match) {
+          byIct.set(c.ict_name, { found: false, onsite: false, status: null, matchedKey: null });
+        } else {
+          byIct.set(c.ict_name, {
+            found: true,
+            onsite: match.entry.onsite,
+            status: match.entry.status,
+            matchedKey: match.matchedKey,
+          });
+        }
+      }
+      leaveStatusByIctName = byIct;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Leave schedule load failed, continuing without filtering: ${message}`);
+      leaveStatusByIctName = null;
+    }
+  }
   const days = Math.max(1, Math.ceil(config.maxAgeHours / 24));
   const ids = await getAllRequests(days);
   const limitedIds = ids.slice(0, config.maxTicketsPerRun);
@@ -1165,7 +1250,7 @@ async function runScanOnce(config: DispatcherConfig): Promise<ScanRunResult> {
       }
     }
 
-    const action = await planAction({ config, requestObj, contacts, loadByGroupIct });
+    const action = await planAction({ config, requestObj, contacts, loadByGroupIct, leaveStatusByIctName });
     if (action.kind === 'skip') {
       stats.skipped += 1;
       continue;
