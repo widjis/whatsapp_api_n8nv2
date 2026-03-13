@@ -25,7 +25,7 @@ temp/
 src/features/integrations/temp_pdf_files/
 
 # Local data
-data/technicianContacts.json
+data/
 
 # Legacy reference (keep out of git)
 reference/

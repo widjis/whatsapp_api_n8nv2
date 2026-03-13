@@ -268,131 +268,58 @@
 - Change:
   - Reformatted `/getbitlocker` WhatsApp output with clearer headings and key sections.
 
-## [2026-03-03 08:22:13 WITA] Draft Helpdesk Dispatcher phased plan
+## [2026-02-24 12:37:03 WIB] Stabilize Baileys connection versioning
 - Change:
-  - Added a phase-by-phase implementation plan for a ManageEngine Helpdesk Dispatcher.
+  - Pinned `@whiskeysockets/baileys` to `6.6.0` (was `latest`).
+  - Pinned `pino` to `^7.0.0` to match Baileys logger types.
+  - Added optional `WA_VERSION` env override and safe fallback versioning in WhatsApp startup.
+  - Normalized `downloadMediaMessage` results to Buffer for stream/Uint8Array returns.
+- Reason:
+  - Prevent recurring `405 Method Not Allowed` and type mismatches from shifting `latest` dependency updates.
+- Impact:
+  - Startup becomes deterministic across environments; `WA_VERSION` can be tuned without code changes.
 
-## [2026-03-03 11:07:47 WITA] Implement Helpdesk Dispatcher process and routing
+## [2026-02-25 08:15:44 WIB] Add /webhook test utility
 - Change:
-  - Added dispatcher process entrypoint and core scan/route/assign logic for ServiceDesk.
-  - Added configurable notification modes with direct-to-technician messaging via gateway endpoint.
+  - Added `src/webhookTest.ts` and `npm run webhook:test` to POST a webhook payload.
+- Reason:
+  - Make it easy to verify `/webhook` end-to-end from local/dev environments.
+- Impact:
+  - Requires a real ServiceDesk ticket ID (`--id`) and a receiver JID/phone (`--receiver`) to exercise the route.
 
-## [2026-03-03 12:51:40 WITA] Configure dispatcher environment variables
+## [2026-02-25 08:28:59 WIB] Prevent /webhook 500 from optional LDAP and notification failures
 - Change:
-  - Added DISPATCHER_* settings to .env with dry-run and notifications disabled.
+  - Made requester mobile lookup by email return null when LDAP is unavailable/misconfigured.
+  - Made requester/technician WhatsApp notifications best-effort to avoid failing the whole webhook.
+- Impact:
+  - `/webhook` continues sending the main receiver notification even if LDAP or optional notifications fail.
 
-## [2026-03-03 13:11:24 WITA] Add load-based ICT technician assignment
+## [2026-02-25 09:06:08 WIB] Add requestId and safe reason to /webhook 500 response
 - Change:
-  - Treated ServiceDesk technician field as group routing target.
-  - Added load-based selection for udf_pick_601 from technicianContacts members.
+  - Included a requestId in `/webhook` 500 responses and logged stack traces server-side.
+  - Returned a safe reason when the error is a missing env var message.
 
-## [2026-03-03 13:52:59 WITA] Add dispatcher per-ticket assignment logs
+## [2026-02-25 09:11:21 WIB] Return 200 even if WhatsApp sendMessage fails
 - Change:
-  - Added optional assignment log output showing ticketId, group, picked ICT technician, and link.
+  - Made `/webhook` return 200 with `receiverSent`/`receiverError` when Baileys sendMessage fails (e.g. `not-acceptable`).
 
-## [2026-03-03 13:58:45 WITA] Add minimum ticket age gate for dispatcher actions
+## [2026-02-25 13:39:54 WIB] Add group precheck for admin-only posting before webhook send
 - Change:
-  - Added DISPATCHER_MIN_AGE_HOURS to avoid acting on brand new tickets.
+  - Added a group metadata precheck to detect admin-only groups and return `group-admin-only` instead of Baileys `not-acceptable`.
+  - Added `receiverMeta` fields to `/webhook` response for easier troubleshooting.
 
-## [2026-03-03 14:19:40 WITA] Implement dispatcher reminders, digest, and AI routing
+## [2026-02-25 13:58:51 WIB] Improve bot membership detection for group precheck
 - Change:
-  - Added reminder rules with cooldown and max-per-run limits.
-  - Added scheduled operational digest preview/sender with age buckets.
-  - Added AI-assisted routing with confidence threshold and heuristic fallback.
-  - Added weighted ICT selection with caps, exclusions, and manual override backoff.
+  - Improved group participant matching to handle multi-device JIDs and alternate user identifiers.
 
-## [2026-03-03 14:35:32 WITA] Make dispatcher load calculation per-group
+## [2026-02-25 14:02:28 WIB] Log structured Baileys error details for webhook sends
 - Change:
-  - Load now counts open tickets per ICT technician within the same group.
+  - Logged structured error details from Baileys send failures to help diagnose `not-acceptable`.
 
-## [2026-03-03 16:03:41 WITA] Fix dry-run state affecting assignment logs
+## [2026-02-25 14:21:58 WIB] Remove admin-only blocking from webhook group precheck
 - Change:
-  - Dry-run no longer records lastAssigned* as if updates were applied.
-  - If ticket is still unassigned, dispatcher can retry even if state exists.
+  - Removed `group-admin-only` blocking logic; webhook always attempts send and reports actual Baileys result.
 
-## [2026-03-03 18:32:12 WITA] Improve AI routing prompt with business rules
+## [2026-02-25 14:49:11 WIB] Upgrade Baileys to latest
 - Change:
-  - Updated AI routing prompt to reflect IT Support vs IT Field vs Document Control definitions.
-
-## [2026-03-03 18:56:03 WITA] Run dispatcher inside main server process
-- Change:
-  - Main app now starts the helpdesk dispatcher when DISPATCHER_ENABLED=true.
-  - Docker `CMD node dist/index.js` will run dispatcher without a second container.
-
-## [2026-03-03 20:13:57 WITA] Add dispatcher heartbeat logs for scheduling
-- Change:
-  - Logs next scheduled scan time based on DISPATCHER_SCAN_INTERVAL_SECONDS.
-
-## [2026-03-03 20:24:41 WITA] Document dispatcher environment variables
-- Change:
-  - Added docs/dispatcher_setup.md to explain dispatcher .env settings.
-
-## [2026-03-03 20:34:59 WITA] Make AI routing fallback visible in reasons
-- Change:
-  - AI response parsing accepts JSON embedded in text/code blocks.
-  - When AI falls back, reason includes ai_fallback:<cause>|<heuristic>.
-  - Dispatcher logs include aiKeyPresent for easier production debugging.
-
-## [2026-03-03 20:38:18 WITA] Document technician exclusion and AI troubleshooting
-- Change:
-  - Added DISPATCHER_ICT_EXCLUDE / DISPATCHER_ICT_MAX_OPEN / DISPATCHER_ICT_WEIGHTS docs.
-  - Added Docker AI troubleshooting section to dispatcher setup docs.
-
-## [2026-03-03 20:59:18 WITA] Enforce ticket template before assigning ICT technician
-- Change:
-  - Dispatcher enforces template “Submit a New Request” (id 305) before assignment updates.
-  - Fixed dispatcher group assignment to use updateRequest(groupName) (was technicianName).
-  - Updated dispatcher setup docs and README to reflect current behavior.
-
-## [2026-03-03 21:05:14 WITA] Enforce template even when assignment already set
-- Change:
-  - Dispatcher now updates template even if group/ICT are already assigned.
-  - Template-only updates do not trigger digest/direct notifications.
-
-## [2026-03-04 09:07:36 WITA] Verify ServiceDesk updates and log apply results
-- Change:
-  - Assignment logs now include applied/verified flags and post-update values.
-  - Dispatcher verifies template/group/ICT via viewRequest after updates and reports failures.
-
-## [2026-03-04 09:11:00 WITA] Fallback to /assign when group update is rejected
-- Change:
-  - If ServiceDesk rejects group update on /requests/{id} with field=group Invalid Input, dispatcher retries via /requests/{id}/assign.
-
-## [2026-03-04 10:05:46 WITA] Route Morowali tickets to valid SDP group names
-- Change:
-  - Dispatcher uses site-aware group mapping for Morowali (ICT System and Support / ICT Network and Infrastructure / ICT Document Controller).
-
-## [2026-03-04 10:11:27 WITA] Assign via technician field and ICT UDF field
-- Change:
-  - Dispatcher updates request.technician.name using targetGroupName.
-  - Dispatcher keeps ICT technician in udf_pick_601 and verifies against technician+udf.
-
-## [2026-03-04 10:37:11 WITA] Enforce template even when ticket is already assigned
-- Change:
-  - Template enforcement now runs even if group/ICT are already filled (prevents false skips).
-
-## [2026-03-04 10:58:45 WITA] Keep dispatcher process alive for heartbeat
-- Change:
-  - Dispatcher scheduling timer no longer uses unref(), so heartbeat keeps running when dispatcher runs standalone.
-
-## [2026-03-04 11:08:20 WITA] Route AI low-confidence tickets to triage
-- Change:
-  - If AI responds with confidence below threshold, dispatcher routes to triage (no keyword fallback).
-
-## [2026-03-04 11:37:17 WITA] Treat missing technician as unassigned for reruns
-- Change:
-  - Dispatcher considers request.technician.name as the assignment marker.
-  - If technician is empty but group exists, dispatcher mirrors group into technician and assigns ICT by load.
-
-## [2026-03-04 12:33:36 WITA] Include AI confidence details in low-confidence reasons
-- Change:
-  - ai_low_conf reasons now include confidence and threshold values for later evaluation.
-
-## [2026-03-04 13:16:34 WITA] Allow dry-run to ignore Redis ticket state
-- Change:
-  - Added DISPATCHER_DRY_RUN_IGNORE_REDIS to bypass per-ticket Redis state checks in dry-run.
-
-## [2026-03-12 11:27:19 WITA] Prevent resolved tickets reverting to In Progress
-- Change:
-  - Webhook handler no longer auto-sets status to In Progress for closed tickets.
-  - Reaction claim ignores tickets already in closed statuses.
+  - Upgraded `@whiskeysockets/baileys` to `7.0.0-rc.9` and updated lockfile.
