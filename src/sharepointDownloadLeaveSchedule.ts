@@ -253,13 +253,18 @@ async function acquireGraphToken(args: { tenantId: string; clientId: string; sco
   const requestedScope = ensureOfflineAccessScope(args.scope);
   const cached = await readTokenCache(args.cachePath);
   const now = Date.now();
+  let fallbackReason = 'cache_missing';
   if (
     cached &&
     cached.clientId === args.clientId &&
     cached.tenantId === args.tenantId &&
     hasAllScopes({ cachedScope: normalizeScopeString(cached.scope), requiredScope: requestedScope })
   ) {
-    if (cached.expiresAtMs - now > 60_000) return cached.accessToken;
+    if (cached.expiresAtMs - now > 60_000) {
+      console.log('SharePoint token cache hit: using unexpired access token');
+      return cached.accessToken;
+    }
+    fallbackReason = 'access_token_expired';
     if (cached.refreshToken) {
       try {
         const refreshed = await refreshAccessToken({
@@ -278,12 +283,22 @@ async function acquireGraphToken(args: { tenantId: string; clientId: string; sco
           clientId: args.clientId,
         };
         await writeTokenCache(args.cachePath, next);
+        console.log('SharePoint token cache refresh success: using refresh token');
         return next.accessToken;
       } catch {
+        fallbackReason = 'refresh_token_failed';
       }
+    } else {
+      fallbackReason = 'refresh_token_missing';
     }
+  } else if (cached) {
+    const sameClient = cached.clientId === args.clientId;
+    const sameTenant = cached.tenantId === args.tenantId;
+    const scopeMatch = hasAllScopes({ cachedScope: normalizeScopeString(cached.scope), requiredScope: requestedScope });
+    fallbackReason = `cache_mismatch(client=${sameClient},tenant=${sameTenant},scope=${scopeMatch})`;
   }
 
+  console.log(`SharePoint device login required: ${fallbackReason}`);
   const device = await requestDeviceCode({ tenantId: args.tenantId, clientId: args.clientId, scope: requestedScope });
   if (device.message) {
     console.log(device.message);

@@ -220,8 +220,15 @@ function startLeaveScheduleAutoDownloadScheduler(): void {
   const tzOffsetHours = parseIntEnv('LEAVE_SCHEDULE_AUTO_DOWNLOAD_TZ_OFFSET_HOURS', 8);
   const hour = Math.min(23, Math.max(0, parseIntEnv('LEAVE_SCHEDULE_AUTO_DOWNLOAD_HOUR', 6)));
   const minute = Math.min(59, Math.max(0, parseIntEnv('LEAVE_SCHEDULE_AUTO_DOWNLOAD_MINUTE', 0)));
+  const runOnStartup = parseBoolean(process.env.LEAVE_SCHEDULE_AUTO_DOWNLOAD_RUN_ON_STARTUP) === true;
 
-  void runLeaveScheduleAutoDownload();
+  if (runOnStartup) {
+    void runLeaveScheduleAutoDownload();
+  } else {
+    console.log(
+      'Leave schedule startup download skipped (set LEAVE_SCHEDULE_AUTO_DOWNLOAD_RUN_ON_STARTUP=true to enable).'
+    );
+  }
 
   const scheduleNext = () => {
     const delayMs = computeNextDelayMs({ tzOffsetHours, hour, minute });

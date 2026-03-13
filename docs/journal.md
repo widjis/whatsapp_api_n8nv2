@@ -371,3 +371,26 @@
 - Impact:
   - Existing valid cache is reused more reliably across rebuilds/restarts.
   - After one successful login with `offline_access`, subsequent runs should refresh silently without asking for device login.
+
+## [2026-03-14 05:20:41 WITA] Disable boot-time SharePoint device prompt by default
+- Change:
+  - Added `LEAVE_SCHEDULE_AUTO_DOWNLOAD_RUN_ON_STARTUP` gate for startup download execution.
+  - Startup auto-download now runs only when the flag is explicitly `true`.
+  - Added startup log message when boot-time download is skipped.
+- Reason:
+  - Container restarts/rebuilds should not force interactive Microsoft device login in non-interactive environments.
+- Impact:
+  - Rebuilds no longer trigger immediate device-code prompt by default.
+  - Daily schedule still runs at configured time; boot-time run can be re-enabled via env flag.
+
+## [2026-03-14 05:26:07 WITA] Add explicit token-fallback diagnostics for Docker troubleshooting
+- Change:
+  - Added runtime logs for SharePoint token acquisition path:
+    - cache hit with unexpired access token
+    - refresh-token success
+    - explicit device-login fallback reason
+  - Added mismatch diagnostics for client/tenant/scope compatibility checks.
+- Reason:
+  - Docker troubleshooting needed clear, in-container proof for why device login still appears.
+- Impact:
+  - `docker logs` now shows precise fallback cause (`refresh_token_missing`, `refresh_token_failed`, `cache_mismatch`, etc.) without exposing secrets.
