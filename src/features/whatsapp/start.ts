@@ -26,7 +26,14 @@ import {
   resetPassword,
   type AdUserInfo,
 } from '../integrations/ldap.js';
-import { buildGetAssetReply, CATEGORY_MAPPING } from '../integrations/snipeIt.js';
+import {
+  buildGetAssetReply,
+  CATEGORY_MAPPING,
+  getExpiringLicenses,
+  getLicenseByName,
+  getLicenses,
+  getLicenseUtilization,
+} from '../integrations/snipeIt.js';
 import {
   addTechnicianContact,
   deleteTechnicianContact,
@@ -891,8 +898,8 @@ function splitCommandLine(input: string): string[] {
 function getRequesterPhoneFromMessage(msg: proto.IWebMessageInfo, remoteJid: string): string | undefined {
   const senderJid = remoteJid.endsWith('@g.us') ? msg.key?.participant : remoteJid;
   if (!senderJid) return undefined;
-  const match = senderJid.match(/(\d+)@s\.whatsapp\.net/);
-  return match?.[1];
+  const digits = extractPhoneDigitsFromJid(senderJid);
+  return digits ?? undefined;
 }
 
 function extractParticipantRawFromUpsert(msg: proto.IWebMessageInfo): string | null {
@@ -1223,8 +1230,13 @@ function resolveParticipantJid(args: { participant: string; store: InMemoryStore
 }
 
 function extractPhoneDigitsFromJid(jid: string): string | null {
-  const match = jid.match(/(\d+)(?::\d+)?@(s\.whatsapp\.net|c\.us)/);
-  return match?.[1] ?? null;
+  const directMatch = jid.match(/(\d+)(?::\d+)?@([A-Za-z0-9.-]+)/);
+  if (directMatch?.[1]) return directMatch[1];
+
+  const atIndex = jid.indexOf('@');
+  const localPart = atIndex >= 0 ? jid.slice(0, atIndex) : jid;
+  const fallbackDigits = localPart.replace(/\D/g, '');
+  return fallbackDigits.length > 0 ? fallbackDigits : null;
 }
 
 function unwrapEphemeralMessage(message: proto.IMessage | null | undefined): proto.IMessage | undefined {
@@ -2218,6 +2230,184 @@ async function handleCommand(args: {
         if (idx < keys.length - 1) lines.push('');
       });
 
+      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      return;
+    }
+    case '/licenses': {
+      const parts = messageContent.trim().split(/\s+/);
+      const limitRaw = parts[1];
+      const offsetRaw = parts[2];
+
+      const limit = limitRaw && /^\d+$/.test(limitRaw) ? Math.max(1, Number(limitRaw)) : 20;
+      const offset = offsetRaw && /^\d+$/.test(offsetRaw) ? Math.max(0, Number(offsetRaw)) : 0;
+      if ((limitRaw && !/^\d+$/.test(limitRaw)) || (offsetRaw && !/^\d+$/.test(offsetRaw))) {
+        await sock.sendMessage(remoteJid, { text: 'Usage: /licenses [limit] [offset]\nExample: /licenses 20 0' });
+        return;
+      }
+
+      const result = await getLicenses({ limit, offset });
+      if (!result.success) {
+        await sock.sendMessage(remoteJid, { text: `❌ Error fetching licenses: ${result.error}` });
+        return;
+      }
+
+      if (result.licenses.length === 0) {
+        await sock.sendMessage(remoteJid, { text: '📄 No licenses found in Snipe-IT.' });
+        return;
+      }
+
+      const lines: string[] = [];
+      lines.push(`*📋 Licenses* (${result.total} total, showing ${result.licenses.length})`);
+      lines.push('');
+
+      result.licenses.forEach((license, index) => {
+        const name = license.name ?? 'Unnamed License';
+        const category = license.categoryName ?? 'Uncategorized';
+        const seats = Math.max(0, license.seats);
+        const available = Math.max(0, license.freeSeats);
+        const used = Math.max(0, seats - available);
+        const expiration = license.expirationDateFormatted ?? 'No expiration';
+        lines.push(`*${index + 1}. ${name}*`);
+        lines.push(`   📂 Category: ${category}`);
+        lines.push(`   💺 Seats: ${used}/${seats} used (${available} available)`);
+        lines.push(`   📅 Expires: ${expiration}`);
+        lines.push('');
+      });
+      lines.push('_Use /getlicense <name_or_id> for detailed information_');
+
+      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      return;
+    }
+    case '/getlicense': {
+      const identifier = messageContent.trim().split(/\s+/).slice(1).join(' ').trim();
+      if (!identifier) {
+        await sock.sendMessage(remoteJid, {
+          text: '❌ Usage: /getlicense <license_name_or_id>\n\nExample: /getlicense "Microsoft Office"',
+        });
+        return;
+      }
+
+      const result = await getLicenseByName(identifier);
+      if (!result.success) {
+        const lines: string[] = [`❌ ${result.error}`];
+        if (result.suggestions && result.suggestions.length > 0) {
+          lines.push('', '*Suggestions:*', ...result.suggestions.map((name) => `• ${name}`));
+        }
+        await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+        return;
+      }
+
+      const license = result.license;
+      const name = license.name ?? 'Unnamed License';
+      const category = license.categoryName ?? 'Uncategorized';
+      const manufacturer = license.manufacturerName ?? 'Unknown';
+      const seats = Math.max(0, license.seats);
+      const available = Math.max(0, license.freeSeats);
+      const used = Math.max(0, seats - available);
+      const expiration = license.expirationDateFormatted ?? 'No expiration';
+      const notes = license.notes ?? 'No notes';
+      const purchaseDate = license.purchaseDateFormatted ?? 'Unknown';
+      const purchaseCost = license.purchaseCost ?? 'Unknown';
+
+      const lines = [
+        '*📄 License Details*',
+        '',
+        `*Name:* ${name}`,
+        `*ID:* ${license.id}`,
+        `*Category:* ${category}`,
+        `*Manufacturer:* ${manufacturer}`,
+        `*Seats:* ${used}/${seats} used (${available} available)`,
+        `*Expiration:* ${expiration}`,
+        `*Purchase Date:* ${purchaseDate}`,
+        `*Purchase Cost:* ${purchaseCost}`,
+        `*Notes:* ${notes}`,
+      ];
+      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      return;
+    }
+    case '/expiring': {
+      const parts = messageContent.trim().split(/\s+/);
+      const daysRaw = parts[1];
+      if (daysRaw && !/^\d+$/.test(daysRaw)) {
+        await sock.sendMessage(remoteJid, { text: 'Usage: /expiring [days]\nExample: /expiring 30' });
+        return;
+      }
+      const days = daysRaw ? Math.max(1, Number(daysRaw)) : 30;
+
+      const result = await getExpiringLicenses(days);
+      if (!result.success) {
+        await sock.sendMessage(remoteJid, { text: `❌ Error fetching expiring licenses: ${result.error}` });
+        return;
+      }
+
+      if (result.licenses.length === 0) {
+        await sock.sendMessage(remoteJid, { text: `✅ No licenses expiring within ${days} days.` });
+        return;
+      }
+
+      const lines: string[] = [`*⚠️ Licenses Expiring in ${days} Days* (${result.total} found)`, ''];
+      result.licenses.forEach((license, index) => {
+        const name = license.name ?? 'Unnamed License';
+        const category = license.categoryName ?? 'Uncategorized';
+        const expiration = license.expirationDateFormatted ?? 'Unknown';
+        const seats = Math.max(0, license.seats);
+        const available = Math.max(0, license.freeSeats);
+        const used = Math.max(0, seats - available);
+
+        let daysUntilExpiration = 'unknown';
+        if (license.expirationDateIso) {
+          const expirationDate = new Date(license.expirationDateIso);
+          if (!Number.isNaN(expirationDate.getTime())) {
+            const diff = Math.ceil((expirationDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+            daysUntilExpiration = String(diff);
+          }
+        }
+
+        lines.push(`*${index + 1}. ${name}*`);
+        lines.push(`   📂 Category: ${category}`);
+        lines.push(`   💺 Usage: ${used}/${seats} seats`);
+        lines.push(`   📅 Expires: ${expiration} (${daysUntilExpiration} days)`);
+        lines.push('');
+      });
+
+      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      return;
+    }
+    case '/licensereport': {
+      const result = await getLicenseUtilization();
+      if (!result.success) {
+        await sock.sendMessage(remoteJid, { text: `❌ Error generating license report: ${result.error}` });
+        return;
+      }
+
+      const data = result.data;
+      const lines: string[] = [
+        '*📊 License Utilization Report*',
+        '',
+        '*📈 Overview:*',
+        `• Total Licenses: ${data.totalLicenses}`,
+        '',
+        '*💺 Utilization:*',
+        `• Fully Utilized (100%): ${data.utilization.fullyUtilized}`,
+        `• Partially Utilized (50-99%): ${data.utilization.partiallyUtilized}`,
+        `• Under Utilized (1-49%): ${data.utilization.underUtilized}`,
+        `• Not Utilized (0%): ${data.utilization.notUtilized}`,
+        '',
+        '*📅 Expiration Status:*',
+        `• Expired: ${data.expiration.expired}`,
+        `• Expiring Soon (30 days): ${data.expiration.expiringSoon}`,
+        `• Valid: ${data.expiration.valid}`,
+        `• No Expiration: ${data.expiration.noExpiration}`,
+        '',
+        '*📂 By Category:*',
+      ];
+
+      Object.entries(data.categories).forEach(([category, info]) => {
+        const utilizationPercent = info.totalSeats > 0 ? Math.round((info.usedSeats / info.totalSeats) * 100) : 0;
+        lines.push(`• ${category}: ${info.count} licenses, ${info.usedSeats}/${info.totalSeats} seats (${utilizationPercent}%)`);
+      });
+
+      lines.push('', `_Generated: ${new Date(result.generatedAt).toLocaleString('en-GB', { timeZone: 'Asia/Jakarta' })}_`);
       await sock.sendMessage(remoteJid, { text: lines.join('\n') });
       return;
     }

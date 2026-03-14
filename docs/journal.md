@@ -328,69 +328,17 @@
 - Change:
   - Updated `.gitignore` to ignore `data/`.
 
-## [2026-03-13 23:10:13 WITA] Integrate leave schedule mapping and dispatcher filtering
+## [2026-03-14 19:44:48 WITA] Fix /resetpassword requester phone parsing across JID formats
 - Change:
-  - Added `leave_schedule_name` field support in technician contacts for explicit Excel name mapping.
-  - Updated `/technician` details and update help text to include `leave_schedule_name`.
-  - Integrated leave schedule filtering into dispatcher ICT selection (only onsite technicians are eligible).
-  - Added dispatcher env configuration for leave schedule XLSX path, sheet, timezone, and fuzzy matching.
+  - Updated requester extraction to reuse shared JID digit parser instead of hardcoded `@s.whatsapp.net` regex.
+  - Expanded JID digit extraction fallback to parse local-part digits for alternate WhatsApp JID variants.
 - Reason:
-  - Excel names and internal ICT technician names differ; a stable mapping is required for reliable matching.
-  - Prevent assigning tickets to technicians that are offsite/on leave according to the crew schedule.
+  - `/resetpassword` could fail with `Invalid phone number format.` when sender JID did not match the strict legacy pattern.
 - Impact:
-  - Dispatcher can exclude offsite technicians when `DISPATCHER_LEAVE_SCHEDULE_ENABLED=true`.
-  - Operators can maintain mappings directly in `data/technicianContacts.json` (or via `/technician update`).
+  - `/resetpassword` authorization resolves requester phone consistently across group and private message JID formats.
 
-## [2026-03-13 23:22:25 WITA] Schedule daily leave schedule auto-download in Docker runtime
+## [2026-03-14 19:56:59 WITA] Implement license command handlers in current WhatsApp project
 - Change:
-  - Refactored SharePoint downloader into importable functions with safe direct-run guard.
-  - Added daily 06:00 WITA auto-download scheduler to refresh the XLSX via SharePoint and atomic swap.
-- Reason:
-  - Keep `data/MTI - Leave Schedule (ICT Team).xlsx` up to date automatically for dispatcher filtering.
-- Impact:
-  - When `LEAVE_SCHEDULE_SHARE_URL` is set (and not disabled), the container refreshes the XLSX every morning.
-
-## [2026-03-13 23:37:04 WITA] Run leave schedule download once at boot
-- Change:
-  - Triggered leave schedule auto-download once at startup before daily scheduling.
-  - Added in-flight and same-day success guards to avoid duplicate downloads.
-- Reason:
-  - Ensure the container has a fresh XLSX immediately after restart and avoids repeated device-code prompts.
-- Impact:
-  - On first boot without a token cache, device-code flow happens immediately; afterwards it runs daily at 06:00 WITA.
-
-## [2026-03-14 04:33:16 WITA] Harden SharePoint token reuse to prevent repeated device login
-- Change:
-  - Normalized OAuth scope strings and compared them as scope sets instead of strict raw string equality.
-  - Added automatic `offline_access` scope during token acquisition to obtain refresh tokens.
-  - Added refresh-token fallback path so failed refresh attempts can recover via device-code flow.
-  - Normalized persisted token-cache scope values for stable matching across restarts.
-- Reason:
-  - Existing token cache could be ignored when env scope formatting changed or when cached scope was broader than required.
-  - Missing `offline_access` caused cache entries without refresh token, forcing new interactive login after access-token expiry.
-- Impact:
-  - Existing valid cache is reused more reliably across rebuilds/restarts.
-  - After one successful login with `offline_access`, subsequent runs should refresh silently without asking for device login.
-
-## [2026-03-14 05:20:41 WITA] Disable boot-time SharePoint device prompt by default
-- Change:
-  - Added `LEAVE_SCHEDULE_AUTO_DOWNLOAD_RUN_ON_STARTUP` gate for startup download execution.
-  - Startup auto-download now runs only when the flag is explicitly `true`.
-  - Added startup log message when boot-time download is skipped.
-- Reason:
-  - Container restarts/rebuilds should not force interactive Microsoft device login in non-interactive environments.
-- Impact:
-  - Rebuilds no longer trigger immediate device-code prompt by default.
-  - Daily schedule still runs at configured time; boot-time run can be re-enabled via env flag.
-
-## [2026-03-14 05:26:07 WITA] Add explicit token-fallback diagnostics for Docker troubleshooting
-- Change:
-  - Added runtime logs for SharePoint token acquisition path:
-    - cache hit with unexpired access token
-    - refresh-token success
-    - explicit device-login fallback reason
-  - Added mismatch diagnostics for client/tenant/scope compatibility checks.
-- Reason:
-  - Docker troubleshooting needed clear, in-container proof for why device login still appears.
-- Impact:
-  - `docker logs` now shows precise fallback cause (`refresh_token_missing`, `refresh_token_failed`, `cache_mismatch`, etc.) without exposing secrets.
+  - Added Snipe-IT license integration functions for list, lookup, expiring, and utilization report flows.
+  - Implemented `/licenses`, `/getlicense`, `/expiring`, and `/licensereport` command handlers in `src/features/whatsapp/start.ts`.
+  - Connected command handlers to typed Snipe-IT responses with user-facing validation and error messages.
