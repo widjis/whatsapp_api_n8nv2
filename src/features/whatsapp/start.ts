@@ -22,6 +22,8 @@ import {
   findAdUserByPhone,
   findUsersByCommonName,
   getBitLockerInfo,
+  getLapsDiagnostics,
+  getLapsInfo,
   renderFindUserCaption,
   resetPassword,
   type AdUserInfo,
@@ -681,6 +683,8 @@ const HELP_COMMANDS_TEXT =
   + `- /getups\n`
   + `- /getasset\n`
   + `- /getbitlocker\n`
+  + `- /getlaps\n`
+  + `- /getlapsdiag\n`
   + `\n*License Commands:*\n`
   + `- /licenses\n`
   + `- /getlicense\n`
@@ -755,6 +759,20 @@ const COMMAND_HELP: Record<string, CommandHelpEntry> = {
     usage: '/getbitlocker <hostname>',
     description: 'Retrieves BitLocker recovery keys for the specified hostname from Active Directory.',
     examples: ['/getbitlocker mti-nb-123'],
+  },
+  getlaps: {
+    usage: '/getlaps <hostname>',
+    description: 'Retrieves LAPS local admin account and current password for the specified hostname.',
+    details:
+      'For security, use this in private chat and only from authorized phone numbers configured in ALLOWED_PHONE_NUMBERS.',
+    examples: ['/getlaps mti-nb-123'],
+  },
+  getlapsdiag: {
+    usage: '/getlapsdiag <hostname>',
+    description: 'Shows which LAPS LDAP attributes are visible to the bot account for a hostname.',
+    details:
+      'Diagnostic command only. Does not return passwords. Use this to validate read permissions after AD group changes.',
+    examples: ['/getlapsdiag mti-nb-123'],
   },
   ticketreport: {
     usage: '/ticketreport [days] [technicianName]',
@@ -2230,6 +2248,110 @@ async function handleCommand(args: {
         if (idx < keys.length - 1) lines.push('');
       });
 
+      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      return;
+    }
+    case '/getlaps': {
+      if (remoteJid.endsWith('@g.us')) {
+        await sock.sendMessage(remoteJid, { text: 'Use /getlaps in a private chat only.' });
+        return;
+      }
+
+      const requester = getRequesterPhoneFromMessage(msg, remoteJid);
+      if (!requester) {
+        await sock.sendMessage(remoteJid, { text: 'Invalid phone number format.' });
+        return;
+      }
+
+      if (allowedPhoneNumbers.length === 0) {
+        await sock.sendMessage(remoteJid, {
+          text: 'Access denied. Configure ALLOWED_PHONE_NUMBERS before using /getlaps.',
+        });
+        return;
+      }
+
+      if (!allowedPhoneNumbers.includes(requester)) {
+        await sock.sendMessage(remoteJid, { text: 'Access denied.' });
+        return;
+      }
+
+      const hostname = messageContent.trim().split(/\s+/)[1];
+      if (!hostname) {
+        await sock.sendMessage(remoteJid, {
+          text: '❌ Invalid command format. Usage: /getlaps <hostname>\n\nExample: /getlaps MTI-NB-177',
+        });
+        return;
+      }
+
+      const result = await getLapsInfo({ hostname });
+      if (!result.success) {
+        await sock.sendMessage(remoteJid, { text: `❌ ${result.error}` });
+        return;
+      }
+
+      const data = result.data;
+      const lines = [
+        '*LAPS Credentials*',
+        `*Hostname:* ${data.hostname.toUpperCase()}`,
+        `*Account:* ${data.account ?? 'Administrator'}`,
+        `*Password:* ${data.password}`,
+        `*Source:* ${data.source}`,
+        `*Expires:* ${data.expiration ?? 'Unknown'}`,
+      ];
+      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      return;
+    }
+    case '/getlapsdiag': {
+      if (remoteJid.endsWith('@g.us')) {
+        await sock.sendMessage(remoteJid, { text: 'Use /getlapsdiag in a private chat only.' });
+        return;
+      }
+
+      const requester = getRequesterPhoneFromMessage(msg, remoteJid);
+      if (!requester) {
+        await sock.sendMessage(remoteJid, { text: 'Invalid phone number format.' });
+        return;
+      }
+
+      if (allowedPhoneNumbers.length === 0) {
+        await sock.sendMessage(remoteJid, {
+          text: 'Access denied. Configure ALLOWED_PHONE_NUMBERS before using /getlapsdiag.',
+        });
+        return;
+      }
+
+      if (!allowedPhoneNumbers.includes(requester)) {
+        await sock.sendMessage(remoteJid, { text: 'Access denied.' });
+        return;
+      }
+
+      const hostname = messageContent.trim().split(/\s+/)[1];
+      if (!hostname) {
+        await sock.sendMessage(remoteJid, {
+          text: '❌ Invalid command format. Usage: /getlapsdiag <hostname>\n\nExample: /getlapsdiag MTI-NB-177',
+        });
+        return;
+      }
+
+      const result = await getLapsDiagnostics({ hostname });
+      if (!result.success) {
+        await sock.sendMessage(remoteJid, { text: `❌ ${result.error}` });
+        return;
+      }
+
+      const data = result.data;
+      const lines = [
+        '*LAPS LDAP Diagnostics*',
+        `*Hostname:* ${data.hostname.toUpperCase()}`,
+        `*DN:* ${data.distinguishedName}`,
+        '',
+        '*Visible Attributes:*',
+        `• msLAPS-Password: ${data.visibleAttributes.msLapsPassword ? 'yes' : 'no'}`,
+        `• msLAPS-EncryptedPassword: ${data.visibleAttributes.msLapsEncryptedPassword ? 'yes' : 'no'}`,
+        `• msLAPS-PasswordExpirationTime: ${data.visibleAttributes.msLapsPasswordExpirationTime ? 'yes' : 'no'}`,
+        `• ms-Mcs-AdmPwd: ${data.visibleAttributes.msMcsAdmPwd ? 'yes' : 'no'}`,
+        `• ms-Mcs-AdmPwdExpirationTime: ${data.visibleAttributes.msMcsAdmPwdExpirationTime ? 'yes' : 'no'}`,
+      ];
       await sock.sendMessage(remoteJid, { text: lines.join('\n') });
       return;
     }

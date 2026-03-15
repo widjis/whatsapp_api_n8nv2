@@ -344,6 +344,46 @@ export type GetBitLockerInfoResult =
       error: string;
     };
 
+export type LapsInfo = {
+  hostname: string;
+  account: string | null;
+  password: string;
+  source: 'msLAPS-Password' | 'ms-Mcs-AdmPwd' | 'powershell-bridge';
+  expiration: string | null;
+};
+
+export type GetLapsInfoResult =
+  | {
+      success: true;
+      data: LapsInfo;
+    }
+  | {
+      success: false;
+      error: string;
+    };
+
+export type LapsDiagnostics = {
+  hostname: string;
+  distinguishedName: string;
+  visibleAttributes: {
+    msLapsPassword: boolean;
+    msLapsEncryptedPassword: boolean;
+    msLapsPasswordExpirationTime: boolean;
+    msMcsAdmPwd: boolean;
+    msMcsAdmPwdExpirationTime: boolean;
+  };
+};
+
+export type GetLapsDiagnosticsResult =
+  | {
+      success: true;
+      data: LapsDiagnostics;
+    }
+  | {
+      success: false;
+      error: string;
+    };
+
 export async function getBitLockerInfo(args: { hostname: string }): Promise<GetBitLockerInfoResult> {
   const hostname = args.hostname.trim();
   if (!hostname) return { success: false, error: 'Hostname is required.' };
@@ -391,6 +431,181 @@ export async function getBitLockerInfo(args: { hostname: string }): Promise<GetB
     client.unbind();
     const message = error instanceof Error ? error.message : String(error);
     return { success: false, error: message };
+  }
+}
+
+export async function getLapsInfo(args: { hostname: string }): Promise<GetLapsInfoResult> {
+  const hostname = args.hostname.trim();
+  if (!hostname) return { success: false, error: 'Hostname is required.' };
+
+  const baseDn = process.env.LDAP_BASE_DN ?? process.env.BASE_DN ?? process.env.BASE_OU ?? '';
+  if (!baseDn) {
+    return {
+      success: false,
+      error: 'LDAP_BASE_DN (or BASE_DN / BASE_OU) must be set in environment.',
+    };
+  }
+
+  const client = await getLdapClient();
+  try {
+    const h = hostname.toUpperCase();
+    const escaped = escapeLdapFilterValue(h);
+    const compFilter = `(&(objectCategory=computer)(|(cn=${escaped})(sAMAccountName=${escaped}$)))`;
+
+    let computerDns = await searchDns({ client, baseDn, filter: compFilter, scope: 'sub', sizeLimit: 2 });
+    if (computerDns.length === 0) {
+      const wcFilter = `(&(objectCategory=computer)(cn=${escaped}*))`;
+      computerDns = await searchDns({ client, baseDn, filter: wcFilter, scope: 'sub', sizeLimit: 2 });
+    }
+
+    if (computerDns.length === 0) {
+      client.unbind();
+      return { success: false, error: `Computer "${hostname}" not found in AD` };
+    }
+    if (computerDns.length > 1) {
+      client.unbind();
+      return { success: false, error: `Multiple computer objects matched "${hostname}". Provide exact hostname.` };
+    }
+
+    const computerDn = computerDns[0];
+    const laps = await searchLapsInfo({ client, computerDn, hostname });
+    client.unbind();
+    if (!laps.info) {
+      const bridged = await getLapsInfoFromBridge(hostname);
+      if (bridged) return bridged;
+      if (laps.hasExpirationOnly) {
+        return {
+          success: false,
+          error:
+            'LAPS is configured for this host, but password attributes are not readable by current bind account. Grant read access to msLAPS-Password or ms-Mcs-AdmPwd.',
+        };
+      }
+      return {
+        success: false,
+        error: 'No LAPS password found. Ensure msLAPS-Password or ms-Mcs-AdmPwd is readable for this account.',
+      };
+    }
+
+    return { success: true, data: laps.info };
+  } catch (error) {
+    client.unbind();
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, error: message };
+  }
+}
+
+export async function getLapsDiagnostics(args: { hostname: string }): Promise<GetLapsDiagnosticsResult> {
+  const hostname = args.hostname.trim();
+  if (!hostname) return { success: false, error: 'Hostname is required.' };
+
+  const baseDn = process.env.LDAP_BASE_DN ?? process.env.BASE_DN ?? process.env.BASE_OU ?? '';
+  if (!baseDn) {
+    return {
+      success: false,
+      error: 'LDAP_BASE_DN (or BASE_DN / BASE_OU) must be set in environment.',
+    };
+  }
+
+  const client = await getLdapClient();
+  try {
+    const h = hostname.toUpperCase();
+    const escaped = escapeLdapFilterValue(h);
+    const compFilter = `(&(objectCategory=computer)(|(cn=${escaped})(sAMAccountName=${escaped}$)))`;
+
+    let computerDns = await searchDns({ client, baseDn, filter: compFilter, scope: 'sub', sizeLimit: 2 });
+    if (computerDns.length === 0) {
+      const wcFilter = `(&(objectCategory=computer)(cn=${escaped}*))`;
+      computerDns = await searchDns({ client, baseDn, filter: wcFilter, scope: 'sub', sizeLimit: 2 });
+    }
+
+    if (computerDns.length === 0) {
+      client.unbind();
+      return { success: false, error: `Computer "${hostname}" not found in AD` };
+    }
+    if (computerDns.length > 1) {
+      client.unbind();
+      return { success: false, error: `Multiple computer objects matched "${hostname}". Provide exact hostname.` };
+    }
+
+    const computerDn = computerDns[0];
+    const data = await searchLapsDiagnostics({ client, computerDn, hostname });
+    client.unbind();
+    if (!data) return { success: false, error: 'Failed to inspect LAPS attributes.' };
+    return { success: true, data };
+  } catch (error) {
+    client.unbind();
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, error: message };
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function getOptionalEnv(name: string): string | null {
+  const value = process.env[name];
+  if (!value) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function getLapsInfoFromBridge(hostname: string): Promise<GetLapsInfoResult | null> {
+  const endpoint = getOptionalEnv('LAPS_POWERSHELL_URL');
+  if (!endpoint) return null;
+
+  try {
+    const token = getOptionalEnv('LAPS_POWERSHELL_TOKEN');
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ hostname }),
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      return { success: false, error: `LAPS bridge request failed (${response.status}): ${text || response.statusText}` };
+    }
+
+    const dataUnknown: unknown = await response.json();
+    if (!isRecord(dataUnknown)) return { success: false, error: 'Invalid LAPS bridge response format.' };
+    const success = dataUnknown.success;
+    if (success !== true) {
+      const errorRaw = dataUnknown.error;
+      const error = typeof errorRaw === 'string' && errorRaw.trim() ? errorRaw : 'LAPS bridge returned failure.';
+      return { success: false, error };
+    }
+
+    const payload = dataUnknown.data;
+    if (!isRecord(payload)) return { success: false, error: 'Invalid LAPS bridge data payload.' };
+
+    const accountRaw = payload.account;
+    const passwordRaw = payload.password;
+    const hostnameRaw = payload.hostname;
+    const expirationRaw = payload.expiration;
+
+    const password = typeof passwordRaw === 'string' && passwordRaw.trim() ? passwordRaw : null;
+    if (!password) return { success: false, error: 'LAPS bridge returned empty password.' };
+
+    const account = typeof accountRaw === 'string' && accountRaw.trim() ? accountRaw : null;
+    const resolvedHostname = typeof hostnameRaw === 'string' && hostnameRaw.trim() ? hostnameRaw : hostname;
+    const expiration = typeof expirationRaw === 'string' && expirationRaw.trim() ? expirationRaw : null;
+
+    return {
+      success: true,
+      data: {
+        hostname: resolvedHostname,
+        account,
+        password,
+        source: 'powershell-bridge',
+        expiration,
+      },
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, error: `LAPS bridge error: ${message}` };
   }
 }
 
@@ -468,6 +683,152 @@ async function searchBitLockerKeys(args: { client: ldap.Client; computerDn: stri
 
         res.on('end', () => {
           resolve(results);
+        });
+      }
+    );
+  });
+}
+
+function parseLapsJson(raw: string): { account: string | null; password: string | null } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { account: null, password: null };
+  try {
+    const parsedUnknown: unknown = JSON.parse(trimmed);
+    if (!parsedUnknown || typeof parsedUnknown !== 'object') return { account: null, password: null };
+    const parsed = parsedUnknown as Record<string, unknown>;
+    const accountRaw = parsed.n;
+    const passwordRaw = parsed.p;
+    const account = typeof accountRaw === 'string' && accountRaw.trim() ? accountRaw.trim() : null;
+    const password = typeof passwordRaw === 'string' && passwordRaw.trim() ? passwordRaw.trim() : null;
+    return { account, password };
+  } catch {
+    return { account: null, password: null };
+  }
+}
+
+async function searchLapsInfo(args: {
+  client: ldap.Client;
+  computerDn: string;
+  hostname: string;
+}): Promise<{ info: LapsInfo | null; hasExpirationOnly: boolean }> {
+  return await new Promise<{ info: LapsInfo | null; hasExpirationOnly: boolean }>((resolve, reject) => {
+    args.client.search(
+      args.computerDn,
+      {
+        scope: 'base',
+        filter: '(objectClass=computer)',
+        attributes: ['cn', 'msLAPS-Password', 'msLAPS-PasswordExpirationTime', 'ms-Mcs-AdmPwd', 'ms-Mcs-AdmPwdExpirationTime'],
+        sizeLimit: 1,
+      },
+      (err, res) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        let found: LapsInfo | null = null;
+        let hasExpirationOnly = false;
+        res.on('searchEntry', (entry) => {
+          const map = buildAttributeMap(entry);
+          const cn = pickFirstAttr(map, 'cn') ?? args.hostname;
+
+          const msLapsPasswordRaw = pickFirstAttr(map, 'msLAPS-Password');
+          const msLapsExp = pickFirstAttr(map, 'msLAPS-PasswordExpirationTime');
+          if (msLapsExp && !msLapsPasswordRaw) {
+            hasExpirationOnly = true;
+          }
+          if (msLapsPasswordRaw) {
+            const parsed = parseLapsJson(msLapsPasswordRaw);
+            if (parsed.password) {
+              found = {
+                hostname: cn,
+                account: parsed.account,
+                password: parsed.password,
+                source: 'msLAPS-Password',
+                expiration: formatFileTimeToLocaleString(msLapsExp) ?? null,
+              };
+              return;
+            }
+          }
+
+          const legacyPassword = pickFirstAttr(map, 'ms-Mcs-AdmPwd');
+          const legacyExp = pickFirstAttr(map, 'ms-Mcs-AdmPwdExpirationTime');
+          if (legacyExp && !legacyPassword) {
+            hasExpirationOnly = true;
+          }
+          if (legacyPassword && legacyPassword.trim()) {
+            found = {
+              hostname: cn,
+              account: null,
+              password: legacyPassword,
+              source: 'ms-Mcs-AdmPwd',
+              expiration: formatFileTimeToLocaleString(legacyExp) ?? null,
+            };
+          }
+        });
+
+        res.on('error', (e) => {
+          reject(e);
+        });
+
+        res.on('end', () => {
+          resolve({ info: found, hasExpirationOnly });
+        });
+      }
+    );
+  });
+}
+
+async function searchLapsDiagnostics(args: {
+  client: ldap.Client;
+  computerDn: string;
+  hostname: string;
+}): Promise<LapsDiagnostics | null> {
+  return await new Promise<LapsDiagnostics | null>((resolve, reject) => {
+    args.client.search(
+      args.computerDn,
+      {
+        scope: 'base',
+        filter: '(objectClass=computer)',
+        attributes: [
+          'cn',
+          'msLAPS-Password',
+          'msLAPS-EncryptedPassword',
+          'msLAPS-PasswordExpirationTime',
+          'ms-Mcs-AdmPwd',
+          'ms-Mcs-AdmPwdExpirationTime',
+        ],
+        sizeLimit: 1,
+      },
+      (err, res) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        let found: LapsDiagnostics | null = null;
+        res.on('searchEntry', (entry) => {
+          const map = buildAttributeMap(entry);
+          const cn = pickFirstAttr(map, 'cn') ?? args.hostname;
+          found = {
+            hostname: cn,
+            distinguishedName: args.computerDn,
+            visibleAttributes: {
+              msLapsPassword: Boolean(pickFirstAttr(map, 'msLAPS-Password')),
+              msLapsEncryptedPassword: Boolean(pickFirstAttr(map, 'msLAPS-EncryptedPassword')),
+              msLapsPasswordExpirationTime: Boolean(pickFirstAttr(map, 'msLAPS-PasswordExpirationTime')),
+              msMcsAdmPwd: Boolean(pickFirstAttr(map, 'ms-Mcs-AdmPwd')),
+              msMcsAdmPwdExpirationTime: Boolean(pickFirstAttr(map, 'ms-Mcs-AdmPwdExpirationTime')),
+            },
+          };
+        });
+
+        res.on('error', (e) => {
+          reject(e);
+        });
+
+        res.on('end', () => {
+          resolve(found);
         });
       }
     );

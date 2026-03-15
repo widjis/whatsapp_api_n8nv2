@@ -342,3 +342,27 @@
   - Added Snipe-IT license integration functions for list, lookup, expiring, and utilization report flows.
   - Implemented `/licenses`, `/getlicense`, `/expiring`, and `/licensereport` command handlers in `src/features/whatsapp/start.ts`.
   - Connected command handlers to typed Snipe-IT responses with user-facing validation and error messages.
+
+## [2026-03-15 21:40:43 WITA] Add secure LAPS lookup command for hostname
+- Change:
+  - Added LDAP LAPS retrieval function that reads modern (`msLAPS-Password`) and legacy (`ms-Mcs-AdmPwd`) attributes.
+  - Added `/getlaps <hostname>` command with private-chat enforcement and allowlist authorization checks.
+  - Updated help text and command details to include `/getlaps`.
+
+## [2026-03-15 21:52:56 WITA] Improve LAPS troubleshooting visibility
+- Change:
+  - Added detection for "expiration present but password hidden" condition in LDAP LAPS lookup.
+  - Updated `/getlaps` backend error to clearly indicate bind account read-permission gap for password attributes.
+  - Verified lookup for `MTI-NB-373` now returns explicit permission-related diagnostics.
+
+## [2026-03-15 21:57:41 WITA] Add optional PowerShell bridge fallback for encrypted LAPS
+- Change:
+  - Added optional fallback in `getLapsInfo` to call external bridge when LDAP cannot read plaintext password attributes.
+  - Added env-based bridge config support: `LAPS_POWERSHELL_URL` and optional `LAPS_POWERSHELL_TOKEN`.
+  - Kept current LDAP-first behavior and retained explicit diagnostics when no bridge is configured.
+
+## [2026-03-15 22:02:45 WITA] Add /getlapsdiag command for live LDAP permission checks
+- Change:
+  - Added `getLapsDiagnostics` in LDAP integration to report safe LAPS attribute visibility without exposing secrets.
+  - Added `/getlapsdiag <hostname>` command with private chat and allowlist authorization checks.
+  - Verified diagnostics for `MTI-NB-373` show encrypted LAPS path visibility (`msLAPS-EncryptedPassword=true`) while plaintext attributes remain hidden.
