@@ -378,3 +378,7 @@
 - Change:
   - Added `/setlaps technician <id> /a|/d` command for LAPS admins to grant/revoke technician `laps_access`.
   - Updated command help and README to document `/setlaps`.
+
+## [2026-03-16 11:09:47 WITA] Add DEBUG_LAPS_AUTH logging for authorization troubleshooting
+- Change:
+  - Added `DEBUG_LAPS_AUTH=true` support to log masked authorization decisions for `/getlaps`, `/getlapsdiag`, and `/setlaps`.

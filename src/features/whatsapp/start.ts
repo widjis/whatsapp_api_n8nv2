@@ -69,6 +69,26 @@ const PRESENCE_BUFFER_MAX_TIMEOUT_MS = Number(process.env.PRESENCE_BUFFER_MAX_TI
 const PRESENCE_BUFFER_STOP_DELAY_MS = Number(process.env.PRESENCE_BUFFER_STOP_DELAY ?? '2000');
 const PRESENCE_SUBSCRIPTION_ENABLED = process.env.PRESENCE_SUBSCRIPTION_ENABLED === 'true';
 const DEBUG_TICKET_REACTIONS = process.env.DEBUG_TICKET_REACTIONS === 'true';
+const DEBUG_LAPS_AUTH = process.env.DEBUG_LAPS_AUTH === 'true';
+
+type DebugValue = string | number | boolean | null | undefined;
+
+function maskPhoneForLogs(raw: string): string {
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length <= 4) return digits;
+  const prefix = digits.slice(0, 3);
+  const suffix = digits.slice(-2);
+  return `${prefix}***${suffix}`;
+}
+
+function debugLapsAuth(event: string, details: Record<string, DebugValue>): void {
+  if (!DEBUG_LAPS_AUTH) return;
+  try {
+    console.log('[laps-auth]', JSON.stringify({ event, ...details }));
+  } catch {
+    console.log('[laps-auth]', event);
+  }
+}
 
 type MediaSendMode = 'base64' | 'file_url' | 'auto';
 
@@ -961,8 +981,21 @@ function parsePhoneCsv(raw: string | undefined): string[] {
 
 function resolveLapsAdminPhones(allowedPhoneNumbers: string[]): string[] {
   const fromEnv = parsePhoneCsv(process.env.LAPS_ADMIN_PHONE_NUMBERS);
-  if (fromEnv.length > 0) return fromEnv;
-  return allowedPhoneNumbers.map((n) => normalizeTechnicianPhoneNumber(n)).filter((n) => n.length > 0);
+  if (fromEnv.length > 0) {
+    debugLapsAuth('resolve_admins', {
+      source: 'LAPS_ADMIN_PHONE_NUMBERS',
+      count: fromEnv.length,
+      sample: fromEnv.slice(0, 3).map((p) => maskPhoneForLogs(p)).join(','),
+    });
+    return fromEnv;
+  }
+  const fallback = allowedPhoneNumbers.map((n) => normalizeTechnicianPhoneNumber(n)).filter((n) => n.length > 0);
+  debugLapsAuth('resolve_admins', {
+    source: 'ALLOWED_PHONE_NUMBERS_fallback',
+    count: fallback.length,
+    sample: fallback.slice(0, 3).map((p) => maskPhoneForLogs(p)).join(','),
+  });
+  return fallback;
 }
 
 function isLapsAdmin(requesterPhone: string, allowedPhoneNumbers: string[]): boolean {
@@ -970,15 +1003,35 @@ function isLapsAdmin(requesterPhone: string, allowedPhoneNumbers: string[]): boo
   if (!normalized) return false;
   const admins = resolveLapsAdminPhones(allowedPhoneNumbers);
   if (admins.length === 0) return false;
-  return admins.includes(normalized);
+  const result = admins.includes(normalized);
+  debugLapsAuth('is_admin', {
+    requester: maskPhoneForLogs(normalized),
+    result,
+    adminsCount: admins.length,
+  });
+  return result;
 }
 
 function canUseLaps(requesterPhone: string, allowedPhoneNumbers: string[]): boolean {
   const normalized = normalizeTechnicianPhoneNumber(requesterPhone);
-  if (!normalized) return false;
-  if (isLapsAdmin(normalized, allowedPhoneNumbers)) return true;
+  if (!normalized) {
+    debugLapsAuth('can_use_laps', { requesterRaw: requesterPhone, normalized: null, result: false, reason: 'normalize_failed' });
+    return false;
+  }
+  const admin = isLapsAdmin(normalized, allowedPhoneNumbers);
+  if (admin) {
+    debugLapsAuth('can_use_laps', { requester: maskPhoneForLogs(normalized), result: true, reason: 'admin' });
+    return true;
+  }
   const contact = getContactByPhone(normalized);
-  return contact?.laps_access === true;
+  const hasAccess = contact?.laps_access === true;
+  debugLapsAuth('can_use_laps', {
+    requester: maskPhoneForLogs(normalized),
+    result: hasAccess,
+    reason: hasAccess ? 'technician_flag' : 'no_flag',
+    contactFound: Boolean(contact),
+  });
+  return hasAccess;
 }
 
 function extractReactionTargetFromMessage(
@@ -2311,6 +2364,11 @@ async function handleCommand(args: {
 
       const admins = resolveLapsAdminPhones(allowedPhoneNumbers);
       if (admins.length === 0) {
+        debugLapsAuth('deny_getlaps', {
+          requester: maskPhoneForLogs(requester),
+          remoteJid,
+          reason: 'no_admins_configured',
+        });
         await sock.sendMessage(remoteJid, {
           text: 'Access denied. Configure LAPS_ADMIN_PHONE_NUMBERS (or ALLOWED_PHONE_NUMBERS) before using /getlaps.',
         });
@@ -2318,6 +2376,7 @@ async function handleCommand(args: {
       }
 
       if (!canUseLaps(requester, allowedPhoneNumbers)) {
+        debugLapsAuth('deny_getlaps', { requester: maskPhoneForLogs(requester), remoteJid, reason: 'not_allowed' });
         await sock.sendMessage(remoteJid, { text: 'Access denied.' });
         return;
       }
@@ -2362,6 +2421,11 @@ async function handleCommand(args: {
 
       const admins = resolveLapsAdminPhones(allowedPhoneNumbers);
       if (admins.length === 0) {
+        debugLapsAuth('deny_getlapsdiag', {
+          requester: maskPhoneForLogs(requester),
+          remoteJid,
+          reason: 'no_admins_configured',
+        });
         await sock.sendMessage(remoteJid, {
           text: 'Access denied. Configure LAPS_ADMIN_PHONE_NUMBERS (or ALLOWED_PHONE_NUMBERS) before using /getlapsdiag.',
         });
@@ -2369,6 +2433,7 @@ async function handleCommand(args: {
       }
 
       if (!canUseLaps(requester, allowedPhoneNumbers)) {
+        debugLapsAuth('deny_getlapsdiag', { requester: maskPhoneForLogs(requester), remoteJid, reason: 'not_allowed' });
         await sock.sendMessage(remoteJid, { text: 'Access denied.' });
         return;
       }
@@ -2417,6 +2482,11 @@ async function handleCommand(args: {
 
       const admins = resolveLapsAdminPhones(allowedPhoneNumbers);
       if (admins.length === 0) {
+        debugLapsAuth('deny_setlaps', {
+          requester: maskPhoneForLogs(requester),
+          remoteJid,
+          reason: 'no_admins_configured',
+        });
         await sock.sendMessage(remoteJid, {
           text: 'Access denied. Configure LAPS_ADMIN_PHONE_NUMBERS (or ALLOWED_PHONE_NUMBERS) before using /setlaps.',
         });
@@ -2424,6 +2494,7 @@ async function handleCommand(args: {
       }
 
       if (!isLapsAdmin(requester, allowedPhoneNumbers)) {
+        debugLapsAuth('deny_setlaps', { requester: maskPhoneForLogs(requester), remoteJid, reason: 'not_admin' });
         await sock.sendMessage(remoteJid, { text: 'Access denied.' });
         return;
       }
