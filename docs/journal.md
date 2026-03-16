@@ -366,3 +366,15 @@
   - Added `getLapsDiagnostics` in LDAP integration to report safe LAPS attribute visibility without exposing secrets.
   - Added `/getlapsdiag <hostname>` command with private chat and allowlist authorization checks.
   - Verified diagnostics for `MTI-NB-373` show encrypted LAPS path visibility (`msLAPS-EncryptedPassword=true`) while plaintext attributes remain hidden.
+
+## [2026-03-16 09:09:08 WITA] Add LAPS admin + technician access management
+- Change:
+  - Added `LAPS_ADMIN_PHONE_NUMBERS` for LAPS admin authorization (falls back to `ALLOWED_PHONE_NUMBERS` when unset).
+  - Added `laps_access` flag to technician contacts and displayed it in `/technician list` and `/technician view`.
+  - Updated `/getlaps` and `/getlapsdiag` to allow LAPS admins and technicians with `laps_access=true`.
+  - Restricted technician contact write operations (`add`, `update`, `delete`, `mapleave`) to LAPS admins.
+
+## [2026-03-16 09:33:26 WITA] Add /setlaps command for admin LAPS access toggling
+- Change:
+  - Added `/setlaps technician <id> /a|/d` command for LAPS admins to grant/revoke technician `laps_access`.
+  - Updated command help and README to document `/setlaps`.

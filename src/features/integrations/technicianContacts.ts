@@ -10,6 +10,7 @@ export type TechnicianContact = {
   email: string | null;
   technician: string;
   gender?: string | null;
+  laps_access?: boolean;
 };
 
 export type TechnicianContactInput = Omit<TechnicianContact, 'id'>;
@@ -21,7 +22,8 @@ export type TechnicianContactUpdateField =
   | 'phone'
   | 'email'
   | 'technician'
-  | 'gender';
+  | 'gender'
+  | 'laps_access';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -72,6 +74,9 @@ function parseContact(raw: unknown, fallbackId: number): TechnicianContact | nul
 
   if (!name || !ictName || !phone || !technician) return null;
 
+  const lapsAccessRaw = raw.laps_access;
+  const laps_access = typeof lapsAccessRaw === 'boolean' ? lapsAccessRaw : false;
+
   return {
     id,
     name,
@@ -81,6 +86,7 @@ function parseContact(raw: unknown, fallbackId: number): TechnicianContact | nul
     email,
     technician,
     gender,
+    laps_access,
   };
 }
 
@@ -218,6 +224,15 @@ export function updateTechnicianContact(
   } else if (field === 'gender') {
     const trimmed = value.trim();
     next.gender = trimmed.toLowerCase() === 'null' || trimmed === '-' || trimmed === '' ? null : trimmed;
+  } else if (field === 'laps_access') {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed === 'true' || trimmed === 'yes' || trimmed === '1' || trimmed === 'allow' || trimmed === 'allowed') {
+      next.laps_access = true;
+    } else if (trimmed === 'false' || trimmed === 'no' || trimmed === '0' || trimmed === 'deny' || trimmed === 'denied') {
+      next.laps_access = false;
+    } else {
+      return null;
+    }
   }
 
   if (!next.name || !next.ict_name || !next.phone || !next.technician) return null;

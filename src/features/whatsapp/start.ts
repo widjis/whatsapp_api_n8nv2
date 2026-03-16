@@ -685,6 +685,7 @@ const HELP_COMMANDS_TEXT =
   + `- /getbitlocker\n`
   + `- /getlaps\n`
   + `- /getlapsdiag\n`
+  + `- /setlaps\n`
   + `\n*License Commands:*\n`
   + `- /licenses\n`
   + `- /getlicense\n`
@@ -764,15 +765,22 @@ const COMMAND_HELP: Record<string, CommandHelpEntry> = {
     usage: '/getlaps <hostname>',
     description: 'Retrieves LAPS local admin account and current password for the specified hostname.',
     details:
-      'For security, use this in private chat and only from authorized phone numbers configured in ALLOWED_PHONE_NUMBERS.',
+      'For security, use this in private chat. Access is granted to LAPS admins (LAPS_ADMIN_PHONE_NUMBERS) and technicians with laps_access=true in technician contacts.',
     examples: ['/getlaps mti-nb-123'],
   },
   getlapsdiag: {
     usage: '/getlapsdiag <hostname>',
     description: 'Shows which LAPS LDAP attributes are visible to the bot account for a hostname.',
     details:
-      'Diagnostic command only. Does not return passwords. Use this to validate read permissions after AD group changes.',
+      'Diagnostic command only. Does not return passwords. Access is granted to LAPS admins (LAPS_ADMIN_PHONE_NUMBERS) and technicians with laps_access=true in technician contacts.',
     examples: ['/getlapsdiag mti-nb-123'],
+  },
+  setlaps: {
+    usage: '/setlaps technician <id> /a|/d',
+    description: 'Grants or revokes LAPS access for a technician.',
+    details:
+      'Admin-only. Updates technician contacts laps_access flag. Use /a to allow and /d to deny. Prefer running in private chat.',
+    examples: ['/setlaps technician 7 /a', '/setlaps technician 7 /d'],
   },
   ticketreport: {
     usage: '/ticketreport [days] [technicianName]',
@@ -939,6 +947,38 @@ function parseReactionGroupIds(): Set<string> {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   return new Set(parts);
+}
+
+function parsePhoneCsv(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => normalizeTechnicianPhoneNumber(s))
+    .filter((s) => s.length > 0);
+}
+
+function resolveLapsAdminPhones(allowedPhoneNumbers: string[]): string[] {
+  const fromEnv = parsePhoneCsv(process.env.LAPS_ADMIN_PHONE_NUMBERS);
+  if (fromEnv.length > 0) return fromEnv;
+  return allowedPhoneNumbers.map((n) => normalizeTechnicianPhoneNumber(n)).filter((n) => n.length > 0);
+}
+
+function isLapsAdmin(requesterPhone: string, allowedPhoneNumbers: string[]): boolean {
+  const normalized = normalizeTechnicianPhoneNumber(requesterPhone);
+  if (!normalized) return false;
+  const admins = resolveLapsAdminPhones(allowedPhoneNumbers);
+  if (admins.length === 0) return false;
+  return admins.includes(normalized);
+}
+
+function canUseLaps(requesterPhone: string, allowedPhoneNumbers: string[]): boolean {
+  const normalized = normalizeTechnicianPhoneNumber(requesterPhone);
+  if (!normalized) return false;
+  if (isLapsAdmin(normalized, allowedPhoneNumbers)) return true;
+  const contact = getContactByPhone(normalized);
+  return contact?.laps_access === true;
 }
 
 function extractReactionTargetFromMessage(
@@ -1694,12 +1734,14 @@ function renderTechnicianDetails(c: TechnicianContact): string {
   const email = c.email ?? 'N/A';
   const gender = c.gender ?? 'N/A';
   const leaveScheduleName = c.leave_schedule_name ?? 'N/A';
+  const lapsAccess = c.laps_access === true ? 'yes' : 'no';
   const rows = formatTwoColumnRows([
     { label: 'ID', value: String(c.id) },
     { label: 'Name', value: c.name },
     { label: 'ICT Name', value: c.ict_name },
     { label: 'Leave Schedule', value: leaveScheduleName },
     { label: 'Role', value: c.technician },
+    { label: 'LAPS Access', value: lapsAccess },
     { label: 'Phone', value: c.phone },
     { label: 'Email', value: email },
     { label: 'Gender', value: gender },
@@ -1713,16 +1755,19 @@ function renderTechnicianTable(contacts: TechnicianContact[]): string {
     name: truncateText(c.name, 28),
     role: truncateText(c.technician, 28),
     phone: truncateText(c.phone, 18),
+    laps: c.laps_access === true ? 'yes' : 'no',
   }));
 
   const maxId = Math.max(2, ...rows.map((r) => r.id.length));
   const maxName = Math.max(4, ...rows.map((r) => r.name.length));
   const maxRole = Math.max(4, ...rows.map((r) => r.role.length));
   const maxPhone = Math.max(5, ...rows.map((r) => r.phone.length));
+  const maxLaps = Math.max(4, ...rows.map((r) => r.laps.length));
 
-  const header = `${'ID'.padEnd(maxId)}  ${'Name'.padEnd(maxName)}  ${'Role'.padEnd(maxRole)}  ${'Phone'.padEnd(maxPhone)}`;
+  const header = `${'ID'.padEnd(maxId)}  ${'Name'.padEnd(maxName)}  ${'Role'.padEnd(maxRole)}  ${'Phone'.padEnd(maxPhone)}  ${'LAPS'.padEnd(maxLaps)}`;
   const lines = rows.map(
-    (r) => `${r.id.padEnd(maxId)}  ${r.name.padEnd(maxName)}  ${r.role.padEnd(maxRole)}  ${r.phone.padEnd(maxPhone)}`
+    (r) =>
+      `${r.id.padEnd(maxId)}  ${r.name.padEnd(maxName)}  ${r.role.padEnd(maxRole)}  ${r.phone.padEnd(maxPhone)}  ${r.laps.padEnd(maxLaps)}`
   );
 
   return `\`\`\`\n${[header, ...lines].join('\n')}\n\`\`\``;
@@ -1736,7 +1781,8 @@ function isUpdateField(value: string): value is TechnicianContactUpdateField {
     value === 'phone' ||
     value === 'email' ||
     value === 'technician' ||
-    value === 'gender'
+    value === 'gender' ||
+    value === 'laps_access'
   );
 }
 
@@ -2263,14 +2309,15 @@ async function handleCommand(args: {
         return;
       }
 
-      if (allowedPhoneNumbers.length === 0) {
+      const admins = resolveLapsAdminPhones(allowedPhoneNumbers);
+      if (admins.length === 0) {
         await sock.sendMessage(remoteJid, {
-          text: 'Access denied. Configure ALLOWED_PHONE_NUMBERS before using /getlaps.',
+          text: 'Access denied. Configure LAPS_ADMIN_PHONE_NUMBERS (or ALLOWED_PHONE_NUMBERS) before using /getlaps.',
         });
         return;
       }
 
-      if (!allowedPhoneNumbers.includes(requester)) {
+      if (!canUseLaps(requester, allowedPhoneNumbers)) {
         await sock.sendMessage(remoteJid, { text: 'Access denied.' });
         return;
       }
@@ -2313,14 +2360,15 @@ async function handleCommand(args: {
         return;
       }
 
-      if (allowedPhoneNumbers.length === 0) {
+      const admins = resolveLapsAdminPhones(allowedPhoneNumbers);
+      if (admins.length === 0) {
         await sock.sendMessage(remoteJid, {
-          text: 'Access denied. Configure ALLOWED_PHONE_NUMBERS before using /getlapsdiag.',
+          text: 'Access denied. Configure LAPS_ADMIN_PHONE_NUMBERS (or ALLOWED_PHONE_NUMBERS) before using /getlapsdiag.',
         });
         return;
       }
 
-      if (!allowedPhoneNumbers.includes(requester)) {
+      if (!canUseLaps(requester, allowedPhoneNumbers)) {
         await sock.sendMessage(remoteJid, { text: 'Access denied.' });
         return;
       }
@@ -2353,6 +2401,68 @@ async function handleCommand(args: {
         `• ms-Mcs-AdmPwdExpirationTime: ${data.visibleAttributes.msMcsAdmPwdExpirationTime ? 'yes' : 'no'}`,
       ];
       await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      return;
+    }
+    case '/setlaps': {
+      if (remoteJid.endsWith('@g.us')) {
+        await sock.sendMessage(remoteJid, { text: 'Use /setlaps in a private chat only.' });
+        return;
+      }
+
+      const requester = getRequesterPhoneFromMessage(msg, remoteJid);
+      if (!requester) {
+        await sock.sendMessage(remoteJid, { text: 'Invalid phone number format.' });
+        return;
+      }
+
+      const admins = resolveLapsAdminPhones(allowedPhoneNumbers);
+      if (admins.length === 0) {
+        await sock.sendMessage(remoteJid, {
+          text: 'Access denied. Configure LAPS_ADMIN_PHONE_NUMBERS (or ALLOWED_PHONE_NUMBERS) before using /setlaps.',
+        });
+        return;
+      }
+
+      if (!isLapsAdmin(requester, allowedPhoneNumbers)) {
+        await sock.sendMessage(remoteJid, { text: 'Access denied.' });
+        return;
+      }
+
+      const tokens = splitCommandLine(messageContent);
+      const kind = tokens[1]?.toLowerCase();
+      const idRaw = tokens[2];
+      const actionRaw = tokens[3];
+
+      if (kind !== 'technician' || !idRaw || !actionRaw) {
+        await sock.sendMessage(remoteJid, {
+          text: 'Usage: /setlaps technician <id> /a|/d\nExample: /setlaps technician 7 /a',
+        });
+        return;
+      }
+
+      const id = Number(idRaw);
+      if (!Number.isFinite(id) || !Number.isInteger(id) || id <= 0) {
+        await sock.sendMessage(remoteJid, { text: 'Invalid technician id. Use: /setlaps technician <id> /a|/d' });
+        return;
+      }
+
+      const action = actionRaw.replace(/^\/+/, '').trim().toLowerCase();
+      const allow = action === 'a' || action === 'add';
+      const deny = action === 'd' || action === 'del' || action === 'delete';
+      if (!allow && !deny) {
+        await sock.sendMessage(remoteJid, { text: 'Invalid action. Use /a (allow) or /d (deny).' });
+        return;
+      }
+
+      const updated = updateTechnicianContact(id, 'laps_access', allow ? 'true' : 'false');
+      if (!updated) {
+        await sock.sendMessage(remoteJid, { text: `Update failed for technician id ${id}.` });
+        return;
+      }
+
+      await sock.sendMessage(remoteJid, {
+        text: `LAPS access ${allow ? 'granted' : 'revoked'}.\n\n${renderTechnicianDetails(updated)}`,
+      });
       return;
     }
     case '/licenses': {
@@ -2535,7 +2645,9 @@ async function handleCommand(args: {
     }
     case '/technician': {
       const requester = getRequesterPhoneFromMessage(msg, remoteJid);
-      if (!requester || (allowedPhoneNumbers.length > 0 && !allowedPhoneNumbers.includes(requester))) {
+      const canUseTechCmd =
+        Boolean(requester) && (allowedPhoneNumbers.includes(requester ?? '') || isLapsAdmin(requester ?? '', allowedPhoneNumbers));
+      if (!canUseTechCmd) {
         await sock.sendMessage(remoteJid, { text: 'Access denied.' });
         return;
       }
@@ -2546,6 +2658,12 @@ async function handleCommand(args: {
       if (!sub) {
         const helpText = renderCommandHelp('technician');
         await sock.sendMessage(remoteJid, { text: helpText ?? 'Usage: /technician <command>' });
+        return;
+      }
+
+      const canManageTechnicians = Boolean(requester) && isLapsAdmin(requester ?? '', allowedPhoneNumbers);
+      if ((sub === 'add' || sub === 'update' || sub === 'delete' || sub === 'mapleave') && !canManageTechnicians) {
+        await sock.sendMessage(remoteJid, { text: 'Access denied.' });
         return;
       }
 
@@ -2647,7 +2765,7 @@ async function handleCommand(args: {
 
         if (!Number.isFinite(id) || !fieldRaw || !value || !isUpdateField(fieldRaw)) {
           await sock.sendMessage(remoteJid, {
-            text: 'Usage: /technician update <id> "field" "value" (fields: name, ict_name, leave_schedule_name, phone, email, technician, gender)',
+            text: 'Usage: /technician update <id> "field" "value" (fields: name, ict_name, leave_schedule_name, phone, email, technician, gender, laps_access)',
           });
           return;
         }
