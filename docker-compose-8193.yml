@@ -7,9 +7,9 @@ services:
       - .env
     environment:
       DATA_DIR: /app/data
-      PORT: 8192
+      PORT: 8193
     ports:
-      - "8193:8192"
+      - "8193:8193"
     volumes:
       - ./data-8193:/app/data
     restart: always
