@@ -94,6 +94,20 @@ Build + run (reads `.env` and persists WhatsApp state under a Docker volume):
 docker compose up --build
 ```
 
+### Multiple Numbers (Multiple Containers)
+Run one container per WhatsApp number. Each container must have:
+- A unique `PORT` mapping
+- A unique persisted `DATA_DIR` volume (so `auth_info_baileys/` and `baileys_store.json` don’t conflict)
+
+Example (2 numbers) is provided in [docker-compose.multi.yml](file:///Users/widjis/Documents/Projects/whatsapp_api_n8nv2/docker-compose.multi.yml):
+```bash
+docker compose -f docker-compose.multi.yml up --build
+```
+
+To add more numbers, duplicate a service block and change:
+- `PORT: 8194` (and the port mapping `"8194:8194"`)
+- volume folder `./data-8194:/app/data`
+
 If you changed code and behavior is still the old one, force a rebuild (the app code is baked into the image):
 ```bash
 docker compose down
