@@ -1,0 +1,15 @@
+name: whatsapp-api-8193
+services:
+  whatsapp-api:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      DATA_DIR: /app/data
+      PORT: 8192
+    ports:
+      - "8193:8192"
+    volumes:
+      - ./data-8193:/app/data
+    restart: always
