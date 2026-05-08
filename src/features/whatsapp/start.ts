@@ -944,10 +944,16 @@ function splitCommandLine(input: string): string[] {
 function getRequesterPhoneFromMessage(msg: proto.IWebMessageInfo, remoteJid: string): string | undefined {
   const senderJid = remoteJid.endsWith('@g.us') ? msg.key?.participant : remoteJid;
   if (!senderJid) return undefined;
-  const digits = extractPhoneDigitsFromJid(senderJid);
+  const deps = activeDeps;
+  const resolvedJid =
+    deps && !remoteJid.endsWith('@g.us')
+      ? resolveParticipantJid({ participant: senderJid, store: deps.store, authInfoDir: deps.authInfoDir })
+      : senderJid;
+  const digits = extractPhoneDigitsFromJid(resolvedJid);
   debugLapsAuth('requester_extract', {
     remoteJid,
     senderJid,
+    resolvedJid,
     digits: digits ? maskPhoneForLogs(digits) : null,
   });
   return digits ?? undefined;
