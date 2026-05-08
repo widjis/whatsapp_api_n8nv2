@@ -1181,18 +1181,36 @@ function pickFirstAttr(map: Map<string, string[]>, name: string): string | undef
 
 export async function findUsersByCommonName(args: { query: string; includePhoto: boolean }): Promise<FindUsersResult> {
   const { query, includePhoto } = args;
-  try {
-    const baseDn = process.env.BASE_DN ?? process.env.LDAP_BASE_DN ?? process.env.BASE_OU ?? '';
-    if (!baseDn) {
-      return {
-        success: false,
-        error: 'BASE_DN (or LDAP_BASE_DN / BASE_OU) must be set in environment',
-      };
-    }
+  const baseDn = process.env.BASE_DN ?? process.env.LDAP_BASE_DN ?? process.env.BASE_OU ?? '';
+  if (!baseDn) {
+    return {
+      success: false,
+      error: 'BASE_DN (or LDAP_BASE_DN / BASE_OU) must be set in environment',
+    };
+  }
 
-    const client = await getLdapClient();
-    const escaped = escapeLdapFilterValue(query.toLowerCase());
-    const filter = `(&(cn=*${escaped}*))`;
+  const minQueryLen = Number(process.env.LDAP_FINDUSER_MIN_QUERY_LEN ?? '3');
+  const cleanedQuery = query.trim();
+  if (cleanedQuery.length < Math.max(1, Math.floor(minQueryLen))) {
+    return {
+      success: false,
+      error: `Query too short. Provide at least ${Math.max(1, Math.floor(minQueryLen))} characters.`,
+    };
+  }
+
+  const timeoutMs = Number(process.env.LDAP_FINDUSER_TIMEOUT ?? process.env.LDAP_TIMEOUT ?? '10000');
+  const sizeLimit = Number(process.env.LDAP_FINDUSER_SIZE_LIMIT ?? '25');
+  const timeLimitSeconds = Number(process.env.LDAP_FINDUSER_TIME_LIMIT_SECONDS ?? '10');
+
+  let client: ldap.Client | null = null;
+  try {
+    client = await getLdapClient();
+    const escaped = escapeLdapFilterValue(cleanedQuery.toLowerCase());
+    const filter =
+      `(&` +
+      `(|(cn=*${escaped}*)(displayName=*${escaped}*)(sAMAccountName=*${escaped}*)(userPrincipalName=*${escaped}*))` +
+      `(objectCategory=person)(objectClass=user)` +
+      `)`;
 
     const attributesBase = [
       'displayName',
@@ -1211,15 +1229,22 @@ export async function findUsersByCommonName(args: { query: string; includePhoto:
     const users: FoundUser[] = [];
     const photoFetches: Array<Promise<void>> = [];
     await new Promise<void>((resolve, reject) => {
-      client.search(
+      const timer = setTimeout(() => {
+        reject(new Error('LDAP search timeout'));
+      }, timeoutMs);
+
+      client?.search(
         baseDn,
         {
           scope: 'sub',
           filter,
           attributes,
+          sizeLimit: Math.max(1, Math.floor(sizeLimit)),
+          timeLimit: Math.max(1, Math.floor(timeLimitSeconds)),
         },
         (err, res) => {
           if (err) {
+            clearTimeout(timer);
             reject(err);
             return;
           }
@@ -1274,10 +1299,12 @@ export async function findUsersByCommonName(args: { query: string; includePhoto:
           });
 
           res.on('error', (e) => {
+            clearTimeout(timer);
             reject(e);
           });
 
           res.on('end', () => {
+            clearTimeout(timer);
             resolve();
           });
         }
@@ -1288,12 +1315,15 @@ export async function findUsersByCommonName(args: { query: string; includePhoto:
       await Promise.all(photoFetches);
     }
 
-    client.unbind();
-
     return { success: true, users };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { success: false, error: message };
+  } finally {
+    try {
+      client?.unbind();
+    } catch {
+    }
   }
 }
 
