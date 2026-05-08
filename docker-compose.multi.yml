@@ -12,6 +12,7 @@ services:
     <<: *whatsapp-api-base
     environment:
       DATA_DIR: /app/data
+      SHAREPOINT_TOKEN_CACHE_PATH: token/sharepoint_token_cache.json
       PORT: 8192
       DISPATCHER_GATEWAY_BASE_URL: http://127.0.0.1:8192
     ports:

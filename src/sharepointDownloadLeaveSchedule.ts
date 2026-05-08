@@ -106,6 +106,15 @@ function getDataDir(): string {
   return path.join(process.cwd(), 'data');
 }
 
+function resolveSharepointTokenCachePath(dataDir: string): string {
+  const raw = process.env.SHAREPOINT_TOKEN_CACHE_PATH;
+  if (typeof raw === 'string' && raw.trim().length > 0) {
+    const trimmed = raw.trim();
+    return path.isAbsolute(trimmed) ? trimmed : path.join(dataDir, trimmed);
+  }
+  return path.join(dataDir, 'sharepoint_token_cache.json');
+}
+
 function toBase64Url(input: string): string {
   return Buffer.from(input, 'utf8')
     .toString('base64')
@@ -422,9 +431,9 @@ async function main(): Promise<void> {
       : 'Files.Read');
 
   const dataDir = getDataDir();
-  const cachePath = path.join(dataDir, 'sharepoint_token_cache.json');
+  const cachePath = resolveSharepointTokenCachePath(dataDir);
 
-  await fs.mkdir(dataDir, { recursive: true });
+  await fs.mkdir(path.dirname(cachePath), { recursive: true });
   const outPath = path.join(dataDir, 'leave_schedule.xlsx');
   const res = await downloadSharepointFileToPath({
     shareUrl: shareUrl.trim(),

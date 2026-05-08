@@ -29,6 +29,15 @@ function resolveDataDir(rootDir: string): string | null {
   return path.isAbsolute(trimmed) ? trimmed : path.join(rootDir, trimmed);
 }
 
+function resolveSharepointTokenCachePath(dataDirResolved: string): string {
+  const raw = process.env.SHAREPOINT_TOKEN_CACHE_PATH;
+  if (typeof raw === 'string' && raw.trim().length > 0) {
+    const trimmed = raw.trim();
+    return path.isAbsolute(trimmed) ? trimmed : path.join(dataDirResolved, trimmed);
+  }
+  return path.join(dataDirResolved, 'sharepoint_token_cache.json');
+}
+
 const app = express();
 const server = createServer(app);
 const io = new SocketIoServer(server);
@@ -182,7 +191,8 @@ async function runLeaveScheduleAutoDownload(): Promise<void> {
   const scope =
     typeof process.env.MS_GRAPH_SCOPES === 'string' && process.env.MS_GRAPH_SCOPES.trim().length > 0 ? process.env.MS_GRAPH_SCOPES.trim() : 'Files.Read';
 
-  const tokenCachePath = path.join(dataDirResolved, 'sharepoint_token_cache.json');
+  const tokenCachePath = resolveSharepointTokenCachePath(dataDirResolved);
+  await fsPromises.mkdir(path.dirname(tokenCachePath), { recursive: true });
 
   const targetPath =
     typeof process.env.DISPATCHER_LEAVE_SCHEDULE_XLSX_PATH === 'string' && process.env.DISPATCHER_LEAVE_SCHEDULE_XLSX_PATH.trim().length > 0
