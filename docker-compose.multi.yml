@@ -26,6 +26,11 @@ services:
       DATA_DIR: /app/data
       PORT: 8193
       DISPATCHER_ENABLED: "false"
+      N8N_ENABLED: "false"
+      REPLY_GATEWAY_ENABLED: "false"
+      REPLY_GATEWAY_AI_ENABLED: "false"
+      SERVICE_CATEGORY_AI_ENABLED: "false"
+      OPENAI_API_KEY: ""
     ports:
       - "8193:8193"
     volumes:
