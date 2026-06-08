@@ -1365,6 +1365,13 @@ export type ResetPasswordResult =
       error: string;
     };
 
+export type UnlockAccountResult =
+  | { success: true }
+  | {
+      success: false;
+      error: string;
+    };
+
 export async function resetPassword(args: {
   upn: string;
   newPassword: string;
@@ -1417,6 +1424,47 @@ export async function resetPassword(args: {
         });
       });
     }
+
+    client.unbind();
+    return { success: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, error: message };
+  }
+}
+
+export async function unlockAccount(args: { upn: string }): Promise<UnlockAccountResult> {
+  const { upn } = args;
+  try {
+    const client = await getLdapClient();
+    const resolved = await resolveUserDn({ client, identifier: upn });
+    if (!resolved.ok) {
+      client.unbind();
+      return {
+        success: false,
+        error: `${resolved.error} Provide full DN or set BASE_DN/LDAP_BASE_DN/BASE_OU correctly.`,
+      };
+    }
+
+    const userDN = resolved.dn;
+
+    const change = new ldap.Change({
+      operation: 'replace',
+      modification: {
+        type: 'lockoutTime',
+        values: ['0'],
+      },
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      client.modify(userDN, change, (err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve();
+      });
+    });
 
     client.unbind();
     return { success: true };

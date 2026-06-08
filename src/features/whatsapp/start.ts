@@ -26,6 +26,7 @@ import {
   getLapsInfo,
   renderFindUserCaption,
   resetPassword,
+  unlockAccount,
   type AdUserInfo,
 } from '../integrations/ldap.js';
 import {
@@ -692,6 +693,7 @@ const HELP_COMMANDS_TEXT =
   + `*User Commands:*\n`
   + `- /finduser\n`
   + `- /resetpassword\n`
+  + `- /unlock\n`
   + `- /newuser\n`
   + `\n*WiFi Commands:*\n`
   + `- /addwifi\n`
@@ -733,6 +735,11 @@ const COMMAND_HELP: Record<string, CommandHelpEntry> = {
     description:
       'Resets the password for the given username. Optionally, use the `/change` flag to require the user to change their password at the next logon.',
     examples: ['/resetpassword johndoe newpassword123', '/resetpassword johndoe newpassword123 /change'],
+  },
+  unlock: {
+    usage: '/unlock <username>',
+    description: 'Unlocks an Active Directory user account (clears lockout).',
+    examples: ['/unlock johndoe', '/unlock john.doe'],
   },
   getups: {
     usage: '/getups <ups_id>',
@@ -2304,6 +2311,37 @@ async function handleCommand(args: {
       }
 
       await sock.sendMessage(remoteJid, { text: `Password reset for ${username} successful` });
+      return;
+    }
+    case '/unlock': {
+      const parts = splitCommandLine(messageContent);
+      const username = parts[1];
+
+      if (!username) {
+        await sock.sendMessage(remoteJid, {
+          text: '❌ Usage: /unlock <username>\nExample: /unlock john.doe',
+        });
+        return;
+      }
+
+      const requester = getRequesterPhoneFromMessage(msg, remoteJid);
+      if (!requester) {
+        await sock.sendMessage(remoteJid, { text: 'Invalid phone number format.' });
+        return;
+      }
+
+      if (allowedPhoneNumbers.length > 0 && !allowedPhoneNumbers.includes(requester)) {
+        await sock.sendMessage(remoteJid, { text: 'Access denied.' });
+        return;
+      }
+
+      const result = await unlockAccount({ upn: username });
+      if (!result.success) {
+        await sock.sendMessage(remoteJid, { text: `Error unlocking account for ${username}: ${result.error}` });
+        return;
+      }
+
+      await sock.sendMessage(remoteJid, { text: `Account unlocked for ${username} successful` });
       return;
     }
     case '/getasset': {

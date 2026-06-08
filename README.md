@@ -246,6 +246,7 @@ Built-in commands:
 - `/help` – lists available commands
 - `/unmute` – re-enables auto-replies after the reply gateway auto-mutes you (private chats only).
 - `/resetpassword <username> <newPassword> [/change]` – username can be `sAMAccountName`, UPN/email, or CN/displayName (if uniquely matched). Resets AD password; optionally forces change at next logon when `/change` flag is present. Access restricted to `ALLOWED_PHONE_NUMBERS` (works in private chats and groups).
+- `/unlock <username>` – unlocks an AD user account (clears lockout). Access restricted to `ALLOWED_PHONE_NUMBERS` (works in private chats and groups).
 - `/getbitlocker <hostname>` – looks up BitLocker recovery keys for a computer in Active Directory (searches by `cn` / `sAMAccountName`). Requires `LDAP_BASE_DN` (or `BASE_DN` / `BASE_OU`) plus LDAP bind settings.
 - `/getlaps <hostname>` – retrieves LAPS local admin account and current password for a hostname (private chat only). Access granted to LAPS admins (`LAPS_ADMIN_PHONE_NUMBERS`) and technicians with `laps_access=true` in technician contacts.
 - `/getlapsdiag <hostname>` – shows which LAPS LDAP attributes are visible (no password) (private chat only). Access granted to LAPS admins (`LAPS_ADMIN_PHONE_NUMBERS`) and technicians with `laps_access=true` in technician contacts.
