@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
+    "postinstall": "node scripts/patch-baileys-macos.mjs",
     "dispatcher": "node dist/dispatcher.js",
     "dispatcher:dev": "tsx src/dispatcher.ts",
     "qontak": "node dist/qontak.js",

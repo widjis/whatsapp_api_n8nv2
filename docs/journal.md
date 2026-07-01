@@ -382,3 +382,9 @@
 ## [2026-03-16 11:09:47 WITA] Add DEBUG_LAPS_AUTH logging for authorization troubleshooting
 - Change:
   - Added `DEBUG_LAPS_AUTH=true` support to log masked authorization decisions for `/getlaps`, `/getlapsdiag`, and `/setlaps`.
+
+## [2026-07-01 15:58:00 WITA] Restore WhatsApp QR generation on latest protocol
+- Change:
+  - Added runtime instrumentation for WhatsApp connection lifecycle to capture socket init, `connection.update`, QR emission, and close code `428`.
+  - Confirmed local `@whiskeysockets/baileys@7.0.0-rc.9` still used `UserAgent.Platform.WEB` internally, which prevented QR generation.
+  - Added `postinstall` patch script to rewrite Baileys validate-connection platform to `MACOS` so QR generation survives fresh installs and Docker builds.
