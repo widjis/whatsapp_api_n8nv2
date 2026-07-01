@@ -3,6 +3,7 @@ FROM node:20-slim AS deps
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+COPY scripts ./scripts
 RUN npm ci
 
 FROM node:20-slim AS build
