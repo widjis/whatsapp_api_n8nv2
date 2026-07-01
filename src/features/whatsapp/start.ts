@@ -3065,6 +3065,7 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
   if (pairingPhone && !sock.authState.creds.registered && !pairingCodeRequested && !pairingRequestInFlight) {
     pairingCodeRequested = true;
     pairingRequestInFlight = true;
+    deps.io.emit('message', `Pairing code mode active for ${pairingPhone}. Do not scan QR for this session.`);
     void (async () => {
       try {
         await delayMs(800);
@@ -3089,10 +3090,15 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
     const qr = update.qr;
 
     if (qr) {
-      console.log('QR Code received');
-      const url = await qrcode.toDataURL(qr);
-      deps.io.emit('qr', url);
-      deps.io.emit('message', 'QR Code received, scan please!');
+      if (pairingPhone && !sock?.authState.creds.registered) {
+        console.log('QR Code received but ignored because pairing code mode is active');
+        deps.io.emit('message', 'QR ignored because pairing code mode is active.');
+      } else {
+        console.log('QR Code received');
+        const url = await qrcode.toDataURL(qr);
+        deps.io.emit('qr', url);
+        deps.io.emit('message', 'QR Code received, scan please!');
+      }
     }
 
     if (connection === 'close') {
