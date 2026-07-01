@@ -66,6 +66,7 @@ let reconnectTimer: NodeJS.Timeout | null = null;
 let reconnectInFlight = false;
 let reconnectAttempt = 0;
 let pairingCodeRequested = false;
+let pairingRequestInFlight = false;
 
 const MESSAGE_BUFFER_ENABLED = process.env.MESSAGE_BUFFER_ENABLED === 'true';
 const MESSAGE_BUFFER_TIMEOUT_MS = Number(process.env.MESSAGE_BUFFER_TIMEOUT ?? '3000');
@@ -169,6 +170,19 @@ function readPairingPhone(): string | null {
   if (typeof raw !== 'string' || raw.trim().length === 0) return null;
   const digits = normalizeTechnicianPhoneNumber(raw);
   return digits.length > 0 ? digits : null;
+}
+
+function delayMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return await Promise.race([
+    promise,
+    new Promise<T>((_resolve, reject) => {
+      setTimeout(() => reject(new Error('Timeout')), ms);
+    }),
+  ]);
 }
 
 function resolveUploadsDir(): string {
@@ -3018,6 +3032,10 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
   messageBuffers.clear();
   presenceStatus.clear();
   const { state, saveCreds } = await useMultiFileAuthState(deps.authInfoDir);
+  if (!state.creds.registered) {
+    pairingCodeRequested = false;
+    pairingRequestInFlight = false;
+  }
 
   const versionFromEnv = parseWaVersionEnv(process.env.WA_VERSION);
   let waVersion: WaVersion | undefined = versionFromEnv ?? undefined;
@@ -3044,15 +3062,20 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
   });
 
   const pairingPhone = readPairingPhone();
-  if (pairingPhone && !sock.authState.creds.registered && !pairingCodeRequested) {
+  if (pairingPhone && !sock.authState.creds.registered && !pairingCodeRequested && !pairingRequestInFlight) {
     pairingCodeRequested = true;
+    pairingRequestInFlight = true;
     void (async () => {
       try {
-        const code = await sock.requestPairingCode(pairingPhone);
+        await delayMs(800);
+        const code = await withTimeout(sock.requestPairingCode(pairingPhone), 12_000);
         deps.io.emit('message', `Pairing code: ${code}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         deps.io.emit('message', `Pairing code request failed: ${message}`);
+        pairingCodeRequested = false;
+      } finally {
+        pairingRequestInFlight = false;
       }
     })();
   }
