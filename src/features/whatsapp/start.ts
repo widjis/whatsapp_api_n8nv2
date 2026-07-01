@@ -65,6 +65,7 @@ const mediaLogger = fatalLogger;
 let reconnectTimer: NodeJS.Timeout | null = null;
 let reconnectInFlight = false;
 let reconnectAttempt = 0;
+let pairingCodeRequested = false;
 
 const MESSAGE_BUFFER_ENABLED = process.env.MESSAGE_BUFFER_ENABLED === 'true';
 const MESSAGE_BUFFER_TIMEOUT_MS = Number(process.env.MESSAGE_BUFFER_TIMEOUT ?? '3000');
@@ -161,6 +162,13 @@ function clearReconnectTimer(): void {
   if (!reconnectTimer) return;
   clearTimeout(reconnectTimer);
   reconnectTimer = null;
+}
+
+function readPairingPhone(): string | null {
+  const raw = process.env.WA_PAIRING_PHONE;
+  if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+  const digits = normalizeTechnicianPhoneNumber(raw);
+  return digits.length > 0 ? digits : null;
 }
 
 function resolveUploadsDir(): string {
@@ -3034,6 +3042,20 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
     logger: fatalLogger,
     browser: Browsers.macOS('Desktop'),
   });
+
+  const pairingPhone = readPairingPhone();
+  if (pairingPhone && !sock.authState.creds.registered && !pairingCodeRequested) {
+    pairingCodeRequested = true;
+    void (async () => {
+      try {
+        const code = await sock.requestPairingCode(pairingPhone);
+        deps.io.emit('message', `Pairing code: ${code}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        deps.io.emit('message', `Pairing code request failed: ${message}`);
+      }
+    })();
+  }
 
   deps.store.bind(sock.ev);
   sock.ev.on('creds.update', saveCreds);
