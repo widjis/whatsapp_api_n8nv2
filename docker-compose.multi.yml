@@ -13,6 +13,7 @@ services:
     environment:
       DATA_DIR: /app/data
       SHAREPOINT_TOKEN_CACHE_PATH: token/sharepoint_token_cache.json
+      WA_PAIRING_PHONE: "6281130569787"
       PORT: 8192
       DISPATCHER_GATEWAY_BASE_URL: http://127.0.0.1:8192
     ports:
@@ -24,6 +25,7 @@ services:
     <<: *whatsapp-api-base
     environment:
       DATA_DIR: /app/data
+      WA_PAIRING_PHONE: "6281145401505"
       PORT: 8193
       DISPATCHER_ENABLED: "false"
       N8N_ENABLED: "false"
