@@ -62,6 +62,9 @@ import {
 let sock: WASocket | undefined;
 const fatalLogger = pino({ level: 'fatal' });
 const mediaLogger = fatalLogger;
+let reconnectTimer: NodeJS.Timeout | null = null;
+let reconnectInFlight = false;
+let reconnectAttempt = 0;
 
 const MESSAGE_BUFFER_ENABLED = process.env.MESSAGE_BUFFER_ENABLED === 'true';
 const MESSAGE_BUFFER_TIMEOUT_MS = Number(process.env.MESSAGE_BUFFER_TIMEOUT ?? '3000');
@@ -152,6 +155,12 @@ function readPositiveIntEnv(key: string, fallback: number): number {
   const i = Math.floor(n);
   if (i <= 0) return fallback;
   return i;
+}
+
+function clearReconnectTimer(): void {
+  if (!reconnectTimer) return;
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
 }
 
 function resolveUploadsDir(): string {
@@ -3022,7 +3031,6 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
       keys: makeCacheableSignalKeyStore(state.keys, fatalLogger),
     },
     version: waVersion,
-    printQRInTerminal: true,
     logger: fatalLogger,
     browser: Browsers.macOS('Desktop'),
   });
@@ -3048,14 +3056,44 @@ export async function startWhatsApp(deps: StartWhatsAppDeps): Promise<void> {
       const statusCode = typeof statusCodeUnknown === 'number' ? statusCodeUnknown : undefined;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log('Connection closed due to ', lastDisconnect?.error, ', reconnecting ', shouldReconnect);
-      deps.io.emit('message', 'Disconnected, reconnecting...');
       if (shouldReconnect) {
-        await startWhatsApp(deps);
+        const maxAttempts = readPositiveIntEnv('WA_MAX_RECONNECT_ATTEMPTS', 20);
+        if (!reconnectInFlight) reconnectAttempt += 1;
+        if (reconnectAttempt > maxAttempts) {
+          clearReconnectTimer();
+          const stopMessage =
+            statusCode === 428
+              ? 'Disconnected (428). Re-auth may be required. Reconnect paused.'
+              : `Disconnected repeatedly. Reconnect paused after ${maxAttempts} attempts.`;
+          deps.io.emit('message', stopMessage);
+          console.warn(stopMessage);
+          return;
+        }
+
+        const delayMs = Math.min(30_000, Math.max(2_000, reconnectAttempt * 2_000));
+        const reconnectMessage =
+          statusCode === 428
+            ? `Disconnected (428). Reconnecting in ${Math.ceil(delayMs / 1000)}s...`
+            : `Disconnected, reconnecting in ${Math.ceil(delayMs / 1000)}s...`;
+        deps.io.emit('message', reconnectMessage);
+
+        if (!reconnectTimer && !reconnectInFlight) {
+          reconnectTimer = setTimeout(() => {
+            clearReconnectTimer();
+            reconnectInFlight = true;
+            void startWhatsApp(deps).finally(() => {
+              reconnectInFlight = false;
+            });
+          }, delayMs);
+        }
       }
       return;
     }
 
     if (connection === 'open') {
+      reconnectAttempt = 0;
+      reconnectInFlight = false;
+      clearReconnectTimer();
       console.log('Opened connection');
       deps.io.emit('ready', 'WhatsApp is ready!');
       deps.io.emit('message', 'WhatsApp is ready!');
