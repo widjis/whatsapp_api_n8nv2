@@ -1,12 +1,12 @@
 import type { Express, Request, Response } from 'express';
 import { body, validationResult } from 'express-validator';
 import type { Multer } from 'multer';
-import type { AnyMessageContent, WASocket } from '@whiskeysockets/baileys';
 import fs from 'node:fs';
 import { JSDOM } from 'jsdom';
 import OpenAI from 'openai';
 import { Redis as IORedis } from 'ioredis';
 import { delay, phoneNumberFormatter } from '../../whatsapp/utils.js';
+import type { ChannelGroupMetadata, ChannelService } from '../../channel/types.js';
 import {
   assignTechnicianToRequest,
   defineServiceCategory,
@@ -23,8 +23,7 @@ export type RegisterMessageRoutesDeps = {
   app: Express;
   upload: Multer;
   checkIp: (req: Request, res: Response, next: () => void) => void | Promise<void>;
-  getSocket: () => WASocket | undefined;
-  checkRegisteredNumber: (jid: string) => Promise<boolean>;
+  getChannel: () => ChannelService;
 };
 
 type SendMessageBody = {
@@ -453,19 +452,19 @@ function isRateOverlimit(error: unknown): boolean {
   return getErrorDataCode(error) === 429;
 }
 
-async function fetchGroupCache(sock: WASocket): Promise<GroupCache> {
-  const groupsUnknown = await sock.groupFetchAllParticipating();
-  const groups = groupsUnknown as unknown as Record<string, { subject?: unknown }>;
+async function fetchGroupCache(channel: ChannelService): Promise<GroupCache> {
+  const groups = await channel.listGroups();
   const entries: GroupCacheEntry[] = [];
-  for (const [id, meta] of Object.entries(groups)) {
-    const subject = typeof meta?.subject === 'string' ? meta.subject : '';
+  for (const group of groups) {
+    const id = group.id;
+    const subject = group.subject;
     if (!subject) continue;
     entries.push({ id, subject, subjectLower: subject.toLowerCase() });
   }
   return { fetchedAtMs: Date.now(), entries };
 }
 
-async function getGroupCache(sock: WASocket): Promise<GroupCache | null> {
+async function getGroupCache(channel: ChannelService): Promise<GroupCache | null> {
   const ttlMs = readPositiveIntEnv('GROUP_CACHE_TTL_MS', 5 * 60 * 1000);
   const backoffMs = readPositiveIntEnv('GROUP_CACHE_BACKOFF_MS', 60 * 1000);
   const now = Date.now();
@@ -477,7 +476,7 @@ async function getGroupCache(sock: WASocket): Promise<GroupCache | null> {
 
   groupCacheInFlight = (async () => {
     try {
-      const fetched = await fetchGroupCache(sock);
+      const fetched = await fetchGroupCache(channel);
       groupCache = fetched;
       return fetched;
     } catch (error) {
@@ -493,10 +492,8 @@ async function getGroupCache(sock: WASocket): Promise<GroupCache | null> {
 
   return await groupCacheInFlight;
 }
-
-async function resolveGroupChatId(args: { sock: WASocket; id?: string; name?: string }): Promise<GroupResolveResult> {
+async function resolveGroupChatId(args: { channel: ChannelService; id?: string; name?: string }): Promise<GroupResolveResult> {
   const id = args.id?.trim();
-  const name = args.name?.trim();
 
   if (id && id.includes('@g.us')) return { ok: true, chatId: id };
   if (id && /^\d+$/.test(id)) return { ok: true, chatId: `${id}@g.us` };
@@ -505,7 +502,7 @@ async function resolveGroupChatId(args: { sock: WASocket; id?: string; name?: st
   if (!query) return { ok: false, reason: 'not_found', message: 'Missing group id or name' };
 
   const now = Date.now();
-  const cached = await getGroupCache(args.sock);
+  const cached = await getGroupCache(args.channel);
   const needle = query.toLowerCase();
   const foundCached = cached?.entries.find((entry) => entry.subjectLower.includes(needle));
   if (foundCached) return { ok: true, chatId: foundCached.id };
@@ -515,7 +512,7 @@ async function resolveGroupChatId(args: { sock: WASocket; id?: string; name?: st
   }
 
   try {
-    const fetched = await fetchGroupCache(args.sock);
+    const fetched = await fetchGroupCache(args.channel);
     groupCache = fetched;
     const foundFresh = fetched.entries.find((entry) => entry.subjectLower.includes(needle));
     if (foundFresh) return { ok: true, chatId: foundFresh.id };
@@ -600,42 +597,32 @@ function extractBaileysErrorDetails(error: unknown): Record<string, unknown> {
 }
 
 async function precheckGroupSend(args: {
-  sock: WASocket;
+  channel: ChannelService;
   receiverJid: string;
 }): Promise<{ receiverMeta: ReceiverMeta; blockError: string | null }> {
   const receiverJid = args.receiverJid;
   const isGroup = receiverJid.endsWith('@g.us');
-  const botUserJidRaw = args.sock.user?.id;
-  const botUserId = typeof botUserJidRaw === 'string' ? botUserJidRaw : null;
+  const botUserId = args.channel.getSelfJids()[0] ?? null;
   const receiverMetaBase: ReceiverMeta = { isGroup, groupAnnounce: null, botInGroup: null, botIsAdmin: null, botUserId };
   if (!isGroup) return { receiverMeta: receiverMetaBase, blockError: null };
 
-  const groupMetadataFn: unknown = (args.sock as unknown as { groupMetadata?: unknown }).groupMetadata;
-  if (typeof groupMetadataFn !== 'function') return { receiverMeta: receiverMetaBase, blockError: null };
-
-  let metaUnknown: unknown;
+  let metaUnknown: ChannelGroupMetadata | null;
   try {
-    metaUnknown = await (groupMetadataFn as (jid: string) => Promise<unknown>)(receiverJid);
+    metaUnknown = await args.channel.getGroupMetadata(receiverJid);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Group metadata lookup failed: ${JSON.stringify({ receiverJid, message })}`);
     return { receiverMeta: receiverMetaBase, blockError: null };
   }
 
-  if (!metaUnknown || typeof metaUnknown !== 'object') return { receiverMeta: receiverMetaBase, blockError: null };
-  const metaRecord = metaUnknown as Record<string, unknown>;
-  const groupAnnounce = typeof metaRecord.announce === 'boolean' ? metaRecord.announce : null;
-
-  const participantsUnknown = metaRecord.participants;
-  const participants = Array.isArray(participantsUnknown) ? participantsUnknown : null;
+  if (!metaUnknown) return { receiverMeta: receiverMetaBase, blockError: null };
+  const groupAnnounce = metaUnknown.announce;
+  const participants = metaUnknown.participants;
   const botUserPartCandidates: string[] = [];
   if (botUserId) botUserPartCandidates.push(getJidUserPart(botUserId));
-  const sockUserRecord =
-    args.sock.user && typeof args.sock.user === 'object' ? (args.sock.user as unknown as Record<string, unknown>) : null;
-  const lid = sockUserRecord && typeof sockUserRecord.lid === 'string' ? sockUserRecord.lid : null;
-  const jid = sockUserRecord && typeof sockUserRecord.jid === 'string' ? sockUserRecord.jid : null;
-  if (lid) botUserPartCandidates.push(getJidUserPart(lid));
-  if (jid) botUserPartCandidates.push(getJidUserPart(jid));
+  for (const jid of args.channel.getSelfJids().slice(1)) {
+    botUserPartCandidates.push(getJidUserPart(jid));
+  }
   const uniqueBotParts = Array.from(new Set(botUserPartCandidates)).filter((p) => p.length > 0);
 
   if (uniqueBotParts.length === 0 || !participants) {
@@ -643,19 +630,12 @@ async function precheckGroupSend(args: {
   }
 
   const botParticipant = participants.find((p) => {
-    if (!p || typeof p !== 'object') return false;
-    const id = (p as Record<string, unknown>).id;
-    if (typeof id !== 'string') return false;
-    const part = getJidUserPart(id);
+    const part = getJidUserPart(p.id);
     return uniqueBotParts.includes(part);
   });
 
   const botInGroup = Boolean(botParticipant);
-  let botIsAdmin: boolean | null = null;
-  if (botParticipant && typeof botParticipant === 'object') {
-    const admin = (botParticipant as Record<string, unknown>).admin;
-    botIsAdmin = typeof admin === 'string' ? admin === 'admin' || admin === 'superadmin' : false;
-  }
+  const botIsAdmin = botParticipant ? botParticipant.isAdmin : null;
 
   const receiverMeta: ReceiverMeta = { ...receiverMetaBase, groupAnnounce, botInGroup, botIsAdmin };
   return { receiverMeta, blockError: null };
@@ -671,9 +651,9 @@ function resolveDocumentMimeType(file: UploadedFile): string {
   return file.mimetype ?? 'application/octet-stream';
 }
 
-async function sendTextMessage(args: { number: string; message: string; sock: WASocket }) {
+async function sendTextMessage(args: { number: string; message: string; channel: ChannelService }) {
   const formattedNumber = phoneNumberFormatter(args.number);
-  const response = await args.sock.sendMessage(formattedNumber, { text: args.message });
+  const response = await args.channel.sendMessage(formattedNumber, { kind: 'text', text: args.message });
   console.log(`Message sent to ${formattedNumber}:`, response);
   return response;
 }
@@ -716,40 +696,70 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         return;
       }
 
-      const sock = deps.getSocket();
-      if (!sock) {
+      const channel = deps.getChannel();
+      if (!channel.isReady()) {
         res.status(503).json({ status: false, message: 'WhatsApp socket is not initialized.' });
         return;
       }
 
       const body = req.body as SendMessageBody;
       const jid = phoneNumberFormatter(body.number);
-      if (!(await deps.checkRegisteredNumber(jid))) {
+      if (!(await channel.checkRegisteredNumber(jid))) {
         res.status(422).json({ status: false, message: 'The number is not registered' });
         return;
       }
 
-      let payload: AnyMessageContent;
       if (req.file) {
         const fileBuffer = await fs.promises.readFile(req.file.path);
-        payload = { image: fileBuffer, caption: body.message ?? '' };
+        try {
+          const response = await channel.sendMessage(jid, {
+            kind: 'image',
+            source: { kind: 'buffer', buffer: fileBuffer },
+            caption: body.message ?? '',
+          });
+          res.status(200).json({ status: true, response });
+        } catch (error) {
+          console.error('Error sending message:', error);
+          res.status(500).json({ status: false, error: String(error) });
+        }
+        return;
       } else if (body.imageBuffer) {
         try {
           const imageBuffer = Buffer.from(body.imageBuffer, 'base64');
-          payload = { image: imageBuffer, caption: body.message ?? '' };
+          try {
+            const response = await channel.sendMessage(jid, {
+              kind: 'image',
+              source: { kind: 'buffer', buffer: imageBuffer },
+              caption: body.message ?? '',
+            });
+            res.status(200).json({ status: true, response });
+          } catch (error) {
+            console.error('Error sending message:', error);
+            res.status(500).json({ status: false, error: String(error) });
+          }
+          return;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           res.status(422).json({ status: false, message: 'Invalid base64 imageBuffer format', error: message });
           return;
         }
       } else if (body.imageUrl) {
-        payload = { image: { url: body.imageUrl }, caption: body.message ?? '' };
-      } else {
-        payload = { text: body.message ?? '' };
+        try {
+          const response = await channel.sendMessage(jid, {
+            kind: 'image',
+            source: { kind: 'url', url: body.imageUrl },
+            caption: body.message ?? '',
+          });
+          res.status(200).json({ status: true, response });
+        } catch (error) {
+          console.error('Error sending message:', error);
+          res.status(500).json({ status: false, error: String(error) });
+        }
+        return;
       }
 
       try {
-        const response = await sock.sendMessage(jid, payload);
+        const response = await channel.sendMessage(jid, { kind: 'text', text: body.message ?? '' });
         res.status(200).json({ status: true, response });
       } catch (error) {
         console.error('Error sending message:', error);
@@ -762,8 +772,8 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
     '/send-bulk-message',
     deps.checkIp,
     async (req: Request, res: Response) => {
-      const sock = deps.getSocket();
-      if (!sock) {
+      const channel = deps.getChannel();
+      if (!channel.isReady()) {
         res.status(503).json({ status: false, message: 'WhatsApp socket is not initialized.' });
         return;
       }
@@ -786,7 +796,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
 
         for (const number of numbers) {
           console.log('Sending message to:', number);
-          await sendTextMessage({ number, message, sock });
+          await sendTextMessage({ number, message, channel });
           const delayDuration = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
           console.log(`Waiting for ${delayDuration} miliseconds before sending the next message.`);
           await delay(delayDuration);
@@ -827,15 +837,15 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         return;
       }
 
-      const sock = deps.getSocket();
-      if (!sock) {
+      const channel = deps.getChannel();
+      if (!channel.isReady()) {
         res.status(503).json({ status: false, message: 'WhatsApp socket is not initialized.' });
         return;
       }
 
       const body = req.body as SendGroupMessageBody;
       const mentionedJids = parseMentionedJids(body.mention);
-      const resolved = await resolveGroupChatId({ sock, id: body.id, name: body.name });
+      const resolved = await resolveGroupChatId({ channel, id: body.id, name: body.name });
       if (!resolved.ok) {
         const statusCode = resolved.reason === 'rate_limited' ? 429 : resolved.reason === 'error' ? 503 : 422;
         res.status(statusCode).json({ status: false, message: resolved.message });
@@ -851,7 +861,8 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         if (document) {
           const buffer = await fs.promises.readFile(document.path);
           try {
-            const response = await sock.sendMessage(chatId, {
+            const response = await channel.sendMessage(chatId, {
+              kind: 'document',
               document: buffer,
               mimetype: resolveDocumentMimeType(document),
               fileName: document.originalname,
@@ -868,8 +879,9 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
         if (image) {
           const buffer = await fs.promises.readFile(image.path);
           try {
-            const response = await sock.sendMessage(chatId, {
-              image: buffer,
+            const response = await channel.sendMessage(chatId, {
+              kind: 'image',
+              source: { kind: 'buffer', buffer },
               caption: body.message ?? '',
               mentions: mentionedJids,
             });
@@ -880,7 +892,8 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
           return;
         }
 
-        const response = await sock.sendMessage(chatId, {
+        const response = await channel.sendMessage(chatId, {
+          kind: 'text',
           text: body.message ?? 'Hello',
           mentions: mentionedJids,
         });
@@ -899,8 +912,8 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
     }
 
     const payload = bodyUnknown;
-    const sock = deps.getSocket();
-    if (!sock) {
+    const channel = deps.getChannel();
+    if (!channel.isReady()) {
       res.status(503).json({ status: false, message: 'WhatsApp socket is not initialized.' });
       return;
     }
@@ -1001,30 +1014,29 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
 
         let receiverSent = false;
         let receiverError: string | null = null;
-        const precheck = await precheckGroupSend({ sock, receiverJid });
+        const precheck = await precheckGroupSend({ channel, receiverJid });
         const receiverMeta = precheck.receiverMeta;
         if (precheck.blockError) {
           receiverError = precheck.blockError;
         } else {
-        try {
-          const sentUnknown: unknown = await sock.sendMessage(receiverJid, { text: msgReceiver });
-          receiverSent = true;
-          const sent = sentUnknown as { key?: { id?: unknown; remoteJid?: unknown } };
-          const messageId = typeof sent.key?.id === 'string' ? sent.key.id : undefined;
-          const remoteJid = typeof sent.key?.remoteJid === 'string' ? sent.key.remoteJid : receiverJid;
-          if (messageId) {
-            await storeTicketNotification({ ticketId: requestObj.id, remoteJid, messageId });
+          try {
+            const sentUnknown = await channel.sendMessage(receiverJid, { kind: 'text', text: msgReceiver });
+            receiverSent = true;
+            const messageId = sentUnknown.messageId;
+            const remoteJid = sentUnknown.remoteJid ?? receiverJid;
+            if (messageId) {
+              await storeTicketNotification({ ticketId: requestObj.id, remoteJid, messageId });
+            }
+          } catch (error) {
+            receiverError = error instanceof Error ? error.message : String(error);
+            const errorDetails = extractBaileysErrorDetails(error);
+            console.error(`Receiver notify (new) failed for ${requestObj.id}: ${JSON.stringify({ receiverJid, errorDetails })}`);
+            if (receiverError === 'not-acceptable') {
+              console.error(
+                `Receiver notify (new) not-acceptable for ${requestObj.id}: ${JSON.stringify({ receiverJid, receiverMeta })}`
+              );
+            }
           }
-        } catch (error) {
-          receiverError = error instanceof Error ? error.message : String(error);
-          const errorDetails = extractBaileysErrorDetails(error);
-          console.error(`Receiver notify (new) failed for ${requestObj.id}: ${JSON.stringify({ receiverJid, errorDetails })}`);
-          if (receiverError === 'not-acceptable') {
-            console.error(
-              `Receiver notify (new) not-acceptable for ${requestObj.id}: ${JSON.stringify({ receiverJid, receiverMeta })}`
-            );
-          }
-        }
         }
 
         const notifyRequesterNew = shouldNotifyWebhook(payload.notify_requester_new, true);
@@ -1044,7 +1056,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
               link: ticketLink,
             });
             try {
-              await sock.sendMessage(requesterJid, { text: msgRequester });
+              await channel.sendMessage(requesterJid, { kind: 'text', text: msgRequester });
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
               console.error(`Requester notify (new) failed for ${requestObj.id}: ${message}`);
@@ -1169,26 +1181,26 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
       });
       let receiverSent = false;
       let receiverError: string | null = null;
-      const precheck = await precheckGroupSend({ sock, receiverJid });
+      const precheck = await precheckGroupSend({ channel, receiverJid });
       const receiverMeta = precheck.receiverMeta;
       if (precheck.blockError) {
         receiverError = precheck.blockError;
       } else {
-      try {
-        await sock.sendMessage(receiverJid, { text: msgReceiverUpdate });
-        receiverSent = true;
-      } catch (error) {
-        receiverError = error instanceof Error ? error.message : String(error);
-        const errorDetails = extractBaileysErrorDetails(error);
-        console.error(
-          `Receiver notify (updated) failed for ${requestObj.id}: ${JSON.stringify({ receiverJid, errorDetails })}`
-        );
-        if (receiverError === 'not-acceptable') {
+        try {
+          await channel.sendMessage(receiverJid, { kind: 'text', text: msgReceiverUpdate });
+          receiverSent = true;
+        } catch (error) {
+          receiverError = error instanceof Error ? error.message : String(error);
+          const errorDetails = extractBaileysErrorDetails(error);
           console.error(
-            `Receiver notify (updated) not-acceptable for ${requestObj.id}: ${JSON.stringify({ receiverJid, receiverMeta })}`
+            `Receiver notify (updated) failed for ${requestObj.id}: ${JSON.stringify({ receiverJid, errorDetails })}`
           );
+          if (receiverError === 'not-acceptable') {
+            console.error(
+              `Receiver notify (updated) not-acceptable for ${requestObj.id}: ${JSON.stringify({ receiverJid, receiverMeta })}`
+            );
+          }
         }
-      }
       }
 
       if (shouldNotify(payload.notify_requester_update)) {
@@ -1203,7 +1215,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
             changes,
           });
           try {
-            await sock.sendMessage(requesterJid, { text: msgRequesterUpdate });
+            await channel.sendMessage(requesterJid, { kind: 'text', text: msgRequesterUpdate });
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             console.error(`Requester notify (updated) failed for ${requestObj.id}: ${message}`);
@@ -1238,7 +1250,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
             link: ticketLink,
           });
           try {
-            await sock.sendMessage(technicianJid, { text: msgTechnician });
+            await channel.sendMessage(technicianJid, { kind: 'text', text: msgTechnician });
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             console.error(`Technician notify failed for ${requestObj.id}: ${message}`);
@@ -1256,7 +1268,7 @@ export function registerMessageRoutes(deps: RegisterMessageRoutesDeps) {
                 link: ticketLink,
               });
               try {
-                await sock.sendMessage(requesterJid, { text: msgRequesterAssign });
+                await channel.sendMessage(requesterJid, { kind: 'text', text: msgRequesterAssign });
               } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);
                 console.error(`Requester notify (assign) failed for ${requestObj.id}: ${message}`);

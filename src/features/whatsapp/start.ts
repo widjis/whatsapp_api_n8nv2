@@ -15,6 +15,7 @@ import {
 } from '@whiskeysockets/baileys';
 import type { WASocket, proto, WAMessage } from '@whiskeysockets/baileys';
 import type { Server as SocketIoServer } from 'socket.io';
+import { createBaileysChannelService } from '../channel/baileysChannel.js';
 import type { InMemoryStore } from './store.js';
 import { resolveSenderNumber } from './utils.js';
 import { handleN8nIntegration, type N8nAttachment, type N8nQuotedMessage } from '../integrations/n8n.js';
@@ -67,6 +68,7 @@ let reconnectInFlight = false;
 let reconnectAttempt = 0;
 let pairingCodeRequested = false;
 let pairingRequestInFlight = false;
+const channel = createBaileysChannelService();
 
 const MESSAGE_BUFFER_ENABLED = process.env.MESSAGE_BUFFER_ENABLED === 'true';
 const MESSAGE_BUFFER_TIMEOUT_MS = Number(process.env.MESSAGE_BUFFER_TIMEOUT ?? '3000');
@@ -174,6 +176,18 @@ function readPairingPhone(): string | null {
 
 function delayMs(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendChannelText(chatId: string, text: string): Promise<void> {
+  await channel.sendMessage(chatId, { kind: 'text', text });
+}
+
+async function sendChannelImage(chatId: string, buffer: Buffer, caption: string): Promise<void> {
+  await channel.sendMessage(chatId, {
+    kind: 'image',
+    source: { kind: 'buffer', buffer },
+    caption,
+  });
 }
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -1181,24 +1195,23 @@ async function handleTicketReactionClaim(args: {
   }
 
   if (!tech) {
-    await args.sock.sendMessage(args.remoteJid, {
-      text: renderClaimFailed(`Phone ${reacterPhone} is not registered as a technician.`),
-    });
+    await sendChannelText(args.remoteJid, renderClaimFailed(`Phone ${reacterPhone} is not registered as a technician.`));
     return;
   }
 
   if (stored.claimed) {
     const by = stored.claimedByName ?? stored.claimedByPhone ?? 'another technician';
-    await args.sock.sendMessage(args.remoteJid, { text: renderAlreadyClaimed(by) });
+    await sendChannelText(args.remoteJid, renderAlreadyClaimed(by));
     return;
   }
 
   const requestObj = await viewRequest(ticketId);
   const previousStatus = requestObj?.status?.name ?? null;
   if (isClosedStatusName(previousStatus)) {
-    await args.sock.sendMessage(args.remoteJid, {
-      text: `*Ticket Already Closed*\nTicket ID: *${ticketId}*\nStatus: *${previousStatus}*\nAction: Claim ignored.`,
-    });
+    await sendChannelText(
+      args.remoteJid,
+      `*Ticket Already Closed*\nTicket ID: *${ticketId}*\nStatus: *${previousStatus}*\nAction: Claim ignored.`
+    );
     return;
   }
   const previousIctTechnician = requestObj?.udf_fields?.udf_pick_601 ?? null;
@@ -1226,13 +1239,13 @@ async function handleTicketReactionClaim(args: {
         : claim.reason === 'invalid_record'
           ? 'Ticket notification record is invalid.'
           : claim.detail ?? 'Ticket notification storage error.';
-    await args.sock.sendMessage(args.remoteJid, { text: renderClaimFailed(reason) });
+    await sendChannelText(args.remoteJid, renderClaimFailed(reason));
     return;
   }
 
   if (claim.wasClaimed) {
     const by = claim.record.claimedByName ?? claim.record.claimedByPhone ?? 'another technician';
-    await args.sock.sendMessage(args.remoteJid, { text: renderAlreadyClaimed(by) });
+    await sendChannelText(args.remoteJid, renderAlreadyClaimed(by));
     return;
   }
 
@@ -1250,20 +1263,18 @@ async function handleTicketReactionClaim(args: {
   });
 
   if (!updateRes.success) {
-    await args.sock.sendMessage(args.remoteJid, {
-      text:
-        `*Ticket Claimed (Partial)*\n` +
+    await sendChannelText(
+      args.remoteJid,
+      `*Ticket Claimed (Partial)*\n` +
         `Ticket ID: *${ticketId}*\n` +
         `Technician: *${tech.name}*\n` +
         `Update: Failed\n` +
-        `Details: ${updateRes.message}`,
-    });
+        `Details: ${updateRes.message}`
+    );
     return;
   }
 
-  await args.sock.sendMessage(args.remoteJid, {
-    text: `✅ Ticket *${ticketId}* claimed.\nTechnician: *${tech.name}*\nStatus: *In Progress*`,
-  });
+  await sendChannelText(args.remoteJid, `✅ Ticket *${ticketId}* claimed.\nTechnician: *${tech.name}*\nStatus: *In Progress*`);
 }
 
 async function handleTicketReactionUnclaim(args: {
@@ -1348,14 +1359,14 @@ async function handleTicketReactionUnclaim(args: {
 
   const updateRes = await updateRequest(ticketId, updateArgs);
   if (!updateRes.success) {
-    await args.sock.sendMessage(args.remoteJid, {
-      text:
-        `*Ticket Unclaimed (Partial)*\n` +
+    await sendChannelText(
+      args.remoteJid,
+      `*Ticket Unclaimed (Partial)*\n` +
         `Ticket ID: *${ticketId}*\n` +
         `Removed by: *${stored.claimedByName ?? stored.claimedByPhone ?? reacterPhone}*\n` +
         `Revert: Failed\n` +
-        `Details: ${updateRes.message}`,
-    });
+        `Details: ${updateRes.message}`
+    );
     return;
   }
 
@@ -1366,9 +1377,10 @@ async function handleTicketReactionUnclaim(args: {
       : 'Cleared';
 
   const by = stored.claimedByName ?? stored.claimedByPhone ?? reacterPhone;
-  await args.sock.sendMessage(args.remoteJid, {
-    text: `*Ticket Unclaimed*\nTicket ID: *${ticketId}*\nRemoved by: *${by}*\nStatus: *${statusToRestore}*\nAssignment: ${assignmentLabel}`,
-  });
+  await sendChannelText(
+    args.remoteJid,
+    `*Ticket Unclaimed*\nTicket ID: *${ticketId}*\nRemoved by: *${by}*\nStatus: *${statusToRestore}*\nAssignment: ${assignmentLabel}`
+  );
 }
 
 function resolveParticipantJid(args: { participant: string; store: InMemoryStore; authInfoDir: string }): string {
@@ -2235,21 +2247,27 @@ async function handleCommand(args: {
   const { sock, msg, remoteJid, messageContent, allowedPhoneNumbers } = args;
   if (!messageContent.startsWith('/')) return;
   const [command] = messageContent.trim().split(/\s+/);
+  const replyText = async (text: string): Promise<void> => {
+    await sendChannelText(remoteJid, text);
+  };
+  const replyImage = async (buffer: Buffer, caption: string): Promise<void> => {
+    await sendChannelImage(remoteJid, buffer, caption);
+  };
 
   switch (command?.toLowerCase()) {
     case '/unmute': {
       if (remoteJid.endsWith('@g.us')) {
-        await sock.sendMessage(remoteJid, { text: 'Use /unmute in a private chat.' });
+        await replyText('Use /unmute in a private chat.');
         return;
       }
 
       const senderKey = getReplyGatewaySenderKey(remoteJid);
       const existed = replyMuteStateBySender.delete(senderKey);
-      await sock.sendMessage(remoteJid, { text: existed ? 'Auto-replies enabled.' : 'Auto-replies already enabled.' });
+      await replyText(existed ? 'Auto-replies enabled.' : 'Auto-replies already enabled.');
       return;
     }
     case '/hi':
-      await sock.sendMessage(remoteJid, { text: 'Hello!' });
+      await replyText('Hello!');
       return;
     case '/finduser': {
       const parts = messageContent.trim().split(/\s+/).slice(1);
@@ -2259,28 +2277,28 @@ async function handleCommand(args: {
       if (includePhoto) parts.splice(photoIdx, 1);
 
       if (parts.length === 0) {
-        await sock.sendMessage(remoteJid, { text: 'Error: No name provided with /finduser command' });
+        await replyText('Error: No name provided with /finduser command');
         return;
       }
 
       const query = parts.join(' ');
       const result = await findUsersByCommonName({ query, includePhoto });
       if (!result.success) {
-        await sock.sendMessage(remoteJid, { text: `Error finding user: ${result.error}` });
+        await replyText(`Error finding user: ${result.error}`);
         return;
       }
 
       if (result.users.length === 0) {
-        await sock.sendMessage(remoteJid, { text: 'User not found.' });
+        await replyText('User not found.');
         return;
       }
 
       for (const user of result.users) {
         const rendered = renderFindUserCaption({ user, includePhoto });
         if (includePhoto && rendered.hasPhoto && rendered.photoBuffer) {
-          await sock.sendMessage(remoteJid, { image: rendered.photoBuffer, caption: rendered.caption });
+          await replyImage(rendered.photoBuffer, rendered.caption);
         } else {
-          await sock.sendMessage(remoteJid, { text: rendered.caption });
+          await replyText(rendered.caption);
         }
       }
       return;
@@ -2293,17 +2311,15 @@ async function handleCommand(args: {
           const normalized = requested.startsWith('/') ? requested.slice(1) : requested;
           const helpText = renderCommandHelp(normalized);
           if (helpText) {
-            await sock.sendMessage(remoteJid, { text: helpText });
+            await replyText(helpText);
             return;
           }
 
-          await sock.sendMessage(remoteJid, {
-            text: '*Unknown command.* Use /help to see the list of available commands.',
-          });
+          await replyText('*Unknown command.* Use /help to see the list of available commands.');
           return;
         }
 
-        await sock.sendMessage(remoteJid, { text: HELP_COMMANDS_TEXT });
+        await replyText(HELP_COMMANDS_TEXT);
         return;
       }
     case '/resetpassword': {
@@ -2321,12 +2337,12 @@ async function handleCommand(args: {
       const changePasswordAtNextLogon = parts.length > 3 && parts[3] === '/change';
       const requester = getRequesterPhoneFromMessage(msg, remoteJid);
       if (!requester) {
-        await sock.sendMessage(remoteJid, { text: 'Invalid phone number format.' });
+        await replyText('Invalid phone number format.');
         return;
       }
 
       if (allowedPhoneNumbers.length > 0 && !allowedPhoneNumbers.includes(requester)) {
-        await sock.sendMessage(remoteJid, { text: 'Access denied.' });
+        await replyText('Access denied.');
         return;
       }
 
@@ -2337,11 +2353,11 @@ async function handleCommand(args: {
       });
 
       if (!result.success) {
-        await sock.sendMessage(remoteJid, { text: `Error resetting password for ${username}: ${result.error}` });
+        await replyText(`Error resetting password for ${username}: ${result.error}`);
         return;
       }
 
-      await sock.sendMessage(remoteJid, { text: `Password reset for ${username} successful` });
+      await replyText(`Password reset for ${username} successful`);
       return;
     }
     case '/unlock': {
@@ -2357,31 +2373,31 @@ async function handleCommand(args: {
 
       const requester = getRequesterPhoneFromMessage(msg, remoteJid);
       if (!requester) {
-        await sock.sendMessage(remoteJid, { text: 'Invalid phone number format.' });
+        await replyText('Invalid phone number format.');
         return;
       }
 
       if (allowedPhoneNumbers.length > 0 && !allowedPhoneNumbers.includes(requester)) {
-        await sock.sendMessage(remoteJid, { text: 'Access denied.' });
+        await replyText('Access denied.');
         return;
       }
 
       const result = await unlockAccount({ upn: username });
       if (!result.success) {
-        await sock.sendMessage(remoteJid, { text: `Error unlocking account for ${username}: ${result.error}` });
+        await replyText(`Error unlocking account for ${username}: ${result.error}`);
         return;
       }
 
-      await sock.sendMessage(remoteJid, { text: `Account unlocked for ${username} successful` });
+      await replyText(`Account unlocked for ${username} successful`);
       return;
     }
     case '/getasset': {
       try {
         const reply = await buildGetAssetReply(messageContent);
-        await sock.sendMessage(remoteJid, { text: reply });
+        await replyText(reply);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await sock.sendMessage(remoteJid, { text: `Error getting assets: ${message}` });
+        await replyText(`Error getting assets: ${message}`);
       }
       return;
     }
@@ -2397,7 +2413,7 @@ async function handleCommand(args: {
 
       const result = await getBitLockerInfo({ hostname });
       if (!result.success) {
-        await sock.sendMessage(remoteJid, { text: `*Error:* ${result.error}` });
+        await replyText(`*Error:* ${result.error}`);
         return;
       }
 
@@ -2434,7 +2450,7 @@ async function handleCommand(args: {
         if (idx < keys.length - 1) lines.push('');
       });
 
-      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      await replyText(lines.join('\n'));
       return;
     }
     case '/getlaps': {

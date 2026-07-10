@@ -8,6 +8,7 @@ import fsPromises from 'node:fs/promises';
 import multer from 'multer';
 import dotenv from 'dotenv';
 import { pino } from 'pino';
+import { createBaileysChannelService } from './features/channel/baileysChannel.js';
 import { makeInMemoryStore } from './features/whatsapp/store.js';
 import { startWhatsApp, getSocket, checkRegisteredNumber } from './features/whatsapp/start.js';
 import { createCheckIpMiddleware } from './features/http/middleware/checkIp.js';
@@ -41,6 +42,7 @@ function resolveSharepointTokenCachePath(dataDirResolved: string): string {
 const app = express();
 const server = createServer(app);
 const io = new SocketIoServer(server);
+const channel = createBaileysChannelService();
 
 const dispatcher = startHelpdeskDispatcher();
 
@@ -121,8 +123,7 @@ registerMessageRoutes({
   app,
   upload,
   checkIp,
-  getSocket,
-  checkRegisteredNumber,
+  getChannel: () => channel,
 });
 
 function parseBoolean(raw: string | undefined): boolean | null {
