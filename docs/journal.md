@@ -388,3 +388,31 @@
   - Added runtime instrumentation for WhatsApp connection lifecycle to capture socket init, `connection.update`, QR emission, and close code `428`.
   - Confirmed local `@whiskeysockets/baileys@7.0.0-rc.9` still used `UserAgent.Platform.WEB` internally, which prevented QR generation.
   - Added `postinstall` patch script to rewrite Baileys validate-connection platform to `MACOS` so QR generation survives fresh installs and Docker builds.
+
+## [2026-07-10 11:20:00 WITA] Add supporting docs for architecture, deployment, and operations
+- Change:
+  - Added `docs/architecture-decisions.md` to capture runtime components, storage model, multi-instance design, and integration boundaries.
+  - Added `docs/deployment-and-environment.md` to document runtime modes, key env groups, per-service overrides, and Docker multi-instance guidance.
+  - Added `docs/operational-runbook.md` to document daily operations, re-auth steps, QR troubleshooting, and container verification commands.
+
+## [2026-07-10 15:05:00 WITA] Add OpenWA migration planning docs
+- Change:
+  - Added `docs/openwa-compatibility-matrix.md` to map current repository capabilities against OpenWA API `0.7.17`.
+  - Added `docs/feature-inventory.md` as the canonical feature inventory grouped by product domain and migration impact.
+  - Added `docs/openwa-target-architecture.md` to define the recommended adapter-based migration boundary from Baileys to OpenWA.
+
+## [2026-07-10 15:35:00 WITA] Add feature specs and workflow docs for migration foundation
+- Change:
+  - Added `docs/feature-specifications.md` to define feature requirements for session management, helpdesk notification and claim flow, and command bot operations.
+  - Added `docs/user-and-operator-workflows.md` to describe operator and user flows for session auth, helpdesk ticket handling, claim/unclaim behavior, and privileged command usage.
+
+## [2026-07-10 16:05:00 WITA] Add dispatcher spec and OpenWA integration contracts
+- Change:
+  - Added `docs/dispatcher-feature-specification.md` to formalize dispatcher scheduling, routing, assignment, reminder, digest, and safety behavior.
+  - Added `docs/openwa-integration-contracts.md` to define the adapter contract between this repository and OpenWA for sessions, outbound messaging, directory lookups, and webhook event normalization.
+
+## [2026-07-10 16:25:00 WITA] Add migration roadmap and validation planning docs
+- Change:
+  - Added `docs/implementation-roadmap.md` to define phased OpenWA migration work from payload validation through cutover.
+  - Added `docs/open-questions-and-challenges.md` to track unresolved payload and migration ambiguities that must not be assumed away.
+  - Added `docs/openwa-validation-plan.md` to define scenario-based evidence collection for session lifecycle, inbound events, reactions, media, and webhook security.
