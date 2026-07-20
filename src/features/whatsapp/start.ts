@@ -2328,9 +2328,7 @@ async function handleCommand(args: {
       const newPassword = parts[2];
 
       if (!username || !newPassword) {
-        await sock.sendMessage(remoteJid, {
-          text: '❌ Usage: /resetpassword <username> <newPassword> [/change]\nExample: /resetpassword john.doe NewPass123 /change',
-        });
+        await replyText('❌ Usage: /resetpassword <username> <newPassword> [/change]\nExample: /resetpassword john.doe NewPass123 /change');
         return;
       }
 
@@ -2365,9 +2363,7 @@ async function handleCommand(args: {
       const username = parts[1];
 
       if (!username) {
-        await sock.sendMessage(remoteJid, {
-          text: '❌ Usage: /unlock <username>\nExample: /unlock john.doe',
-        });
+        await replyText('❌ Usage: /unlock <username>\nExample: /unlock john.doe');
         return;
       }
 
@@ -2405,9 +2401,7 @@ async function handleCommand(args: {
       const hostname = messageContent.trim().split(/\s+/)[1];
 
       if (!hostname) {
-        await sock.sendMessage(remoteJid, {
-          text: '❌ Invalid command format. Usage: /getbitlocker <hostname>\n\nExample: /getbitlocker MTI-NB-177',
-        });
+        await replyText('❌ Invalid command format. Usage: /getbitlocker <hostname>\n\nExample: /getbitlocker MTI-NB-177');
         return;
       }
 
@@ -2455,13 +2449,13 @@ async function handleCommand(args: {
     }
     case '/getlaps': {
       if (remoteJid.endsWith('@g.us')) {
-        await sock.sendMessage(remoteJid, { text: 'Use /getlaps in a private chat only.' });
+        await replyText('Use /getlaps in a private chat only.');
         return;
       }
 
       const requester = getRequesterPhoneFromMessage(msg, remoteJid);
       if (!requester) {
-        await sock.sendMessage(remoteJid, { text: 'Invalid phone number format.' });
+        await replyText('Invalid phone number format.');
         return;
       }
       debugLapsAuth('getlaps_request', {
@@ -2478,9 +2472,7 @@ async function handleCommand(args: {
           remoteJid,
           reason: 'no_admins_configured',
         });
-        await sock.sendMessage(remoteJid, {
-          text: 'Access denied. Configure LAPS_ADMIN_PHONE_NUMBERS (or ALLOWED_PHONE_NUMBERS) before using /getlaps.',
-        });
+        await replyText('Access denied. Configure LAPS_ADMIN_PHONE_NUMBERS (or ALLOWED_PHONE_NUMBERS) before using /getlaps.');
         return;
       }
 
@@ -2493,21 +2485,19 @@ async function handleCommand(args: {
           adminsCount: admins.length,
           adminsSample: admins.slice(0, 3).map((p) => maskPhoneForLogs(p)).join(','),
         });
-        await sock.sendMessage(remoteJid, { text: 'Access denied.' });
+        await replyText('Access denied.');
         return;
       }
 
       const hostname = messageContent.trim().split(/\s+/)[1];
       if (!hostname) {
-        await sock.sendMessage(remoteJid, {
-          text: '❌ Invalid command format. Usage: /getlaps <hostname>\n\nExample: /getlaps MTI-NB-177',
-        });
+        await replyText('❌ Invalid command format. Usage: /getlaps <hostname>\n\nExample: /getlaps MTI-NB-177');
         return;
       }
 
       const result = await getLapsInfo({ hostname });
       if (!result.success) {
-        await sock.sendMessage(remoteJid, { text: `❌ ${result.error}` });
+        await replyText(`âŒ ${result.error}`);
         return;
       }
 
@@ -2520,18 +2510,18 @@ async function handleCommand(args: {
         `*Source:* ${data.source}`,
         `*Expires:* ${data.expiration ?? 'Unknown'}`,
       ];
-      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      await replyText(lines.join('\n'));
       return;
     }
     case '/getlapsdiag': {
       if (remoteJid.endsWith('@g.us')) {
-        await sock.sendMessage(remoteJid, { text: 'Use /getlapsdiag in a private chat only.' });
+        await replyText('Use /getlapsdiag in a private chat only.');
         return;
       }
 
       const requester = getRequesterPhoneFromMessage(msg, remoteJid);
       if (!requester) {
-        await sock.sendMessage(remoteJid, { text: 'Invalid phone number format.' });
+        await replyText('Invalid phone number format.');
         return;
       }
 
@@ -2542,29 +2532,25 @@ async function handleCommand(args: {
           remoteJid,
           reason: 'no_admins_configured',
         });
-        await sock.sendMessage(remoteJid, {
-          text: 'Access denied. Configure LAPS_ADMIN_PHONE_NUMBERS (or ALLOWED_PHONE_NUMBERS) before using /getlapsdiag.',
-        });
+        await replyText('Access denied. Configure LAPS_ADMIN_PHONE_NUMBERS (or ALLOWED_PHONE_NUMBERS) before using /getlapsdiag.');
         return;
       }
 
       if (!canUseLaps(requester, allowedPhoneNumbers)) {
         debugLapsAuth('deny_getlapsdiag', { requester: maskPhoneForLogs(requester), remoteJid, reason: 'not_allowed' });
-        await sock.sendMessage(remoteJid, { text: 'Access denied.' });
+        await replyText('Access denied.');
         return;
       }
 
       const hostname = messageContent.trim().split(/\s+/)[1];
       if (!hostname) {
-        await sock.sendMessage(remoteJid, {
-          text: '❌ Invalid command format. Usage: /getlapsdiag <hostname>\n\nExample: /getlapsdiag MTI-NB-177',
-        });
+        await replyText('❌ Invalid command format. Usage: /getlapsdiag <hostname>\n\nExample: /getlapsdiag MTI-NB-177');
         return;
       }
 
       const result = await getLapsDiagnostics({ hostname });
       if (!result.success) {
-        await sock.sendMessage(remoteJid, { text: `❌ ${result.error}` });
+        await replyText(`âŒ ${result.error}`);
         return;
       }
 
@@ -2581,18 +2567,18 @@ async function handleCommand(args: {
         `• ms-Mcs-AdmPwd: ${data.visibleAttributes.msMcsAdmPwd ? 'yes' : 'no'}`,
         `• ms-Mcs-AdmPwdExpirationTime: ${data.visibleAttributes.msMcsAdmPwdExpirationTime ? 'yes' : 'no'}`,
       ];
-      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      await replyText(lines.join('\n'));
       return;
     }
     case '/setlaps': {
       if (remoteJid.endsWith('@g.us')) {
-        await sock.sendMessage(remoteJid, { text: 'Use /setlaps in a private chat only.' });
+        await replyText('Use /setlaps in a private chat only.');
         return;
       }
 
       const requester = getRequesterPhoneFromMessage(msg, remoteJid);
       if (!requester) {
-        await sock.sendMessage(remoteJid, { text: 'Invalid phone number format.' });
+        await replyText('Invalid phone number format.');
         return;
       }
 
@@ -2603,15 +2589,13 @@ async function handleCommand(args: {
           remoteJid,
           reason: 'no_admins_configured',
         });
-        await sock.sendMessage(remoteJid, {
-          text: 'Access denied. Configure LAPS_ADMIN_PHONE_NUMBERS (or ALLOWED_PHONE_NUMBERS) before using /setlaps.',
-        });
+        await replyText('Access denied. Configure LAPS_ADMIN_PHONE_NUMBERS (or ALLOWED_PHONE_NUMBERS) before using /setlaps.');
         return;
       }
 
       if (!isLapsAdmin(requester, allowedPhoneNumbers)) {
         debugLapsAuth('deny_setlaps', { requester: maskPhoneForLogs(requester), remoteJid, reason: 'not_admin' });
-        await sock.sendMessage(remoteJid, { text: 'Access denied.' });
+        await replyText('Access denied.');
         return;
       }
 
@@ -2621,15 +2605,13 @@ async function handleCommand(args: {
       const actionRaw = tokens[3];
 
       if (kind !== 'technician' || !idRaw || !actionRaw) {
-        await sock.sendMessage(remoteJid, {
-          text: 'Usage: /setlaps technician <id> /a|/d\nExample: /setlaps technician 7 /a',
-        });
+        await replyText('Usage: /setlaps technician <id> /a|/d\nExample: /setlaps technician 7 /a');
         return;
       }
 
       const id = Number(idRaw);
       if (!Number.isFinite(id) || !Number.isInteger(id) || id <= 0) {
-        await sock.sendMessage(remoteJid, { text: 'Invalid technician id. Use: /setlaps technician <id> /a|/d' });
+        await replyText('Invalid technician id. Use: /setlaps technician <id> /a|/d');
         return;
       }
 
@@ -2637,19 +2619,17 @@ async function handleCommand(args: {
       const allow = action === 'a' || action === 'add';
       const deny = action === 'd' || action === 'del' || action === 'delete';
       if (!allow && !deny) {
-        await sock.sendMessage(remoteJid, { text: 'Invalid action. Use /a (allow) or /d (deny).' });
+        await replyText('Invalid action. Use /a (allow) or /d (deny).');
         return;
       }
 
       const updated = updateTechnicianContact(id, 'laps_access', allow ? 'true' : 'false');
       if (!updated) {
-        await sock.sendMessage(remoteJid, { text: `Update failed for technician id ${id}.` });
+        await replyText(`Update failed for technician id ${id}.`);
         return;
       }
 
-      await sock.sendMessage(remoteJid, {
-        text: `LAPS access ${allow ? 'granted' : 'revoked'}.\n\n${renderTechnicianDetails(updated)}`,
-      });
+      await replyText(`LAPS access ${allow ? 'granted' : 'revoked'}.\n\n${renderTechnicianDetails(updated)}`);
       return;
     }
     case '/licenses': {
@@ -2660,18 +2640,18 @@ async function handleCommand(args: {
       const limit = limitRaw && /^\d+$/.test(limitRaw) ? Math.max(1, Number(limitRaw)) : 20;
       const offset = offsetRaw && /^\d+$/.test(offsetRaw) ? Math.max(0, Number(offsetRaw)) : 0;
       if ((limitRaw && !/^\d+$/.test(limitRaw)) || (offsetRaw && !/^\d+$/.test(offsetRaw))) {
-        await sock.sendMessage(remoteJid, { text: 'Usage: /licenses [limit] [offset]\nExample: /licenses 20 0' });
+        await replyText('Usage: /licenses [limit] [offset]\nExample: /licenses 20 0');
         return;
       }
 
       const result = await getLicenses({ limit, offset });
       if (!result.success) {
-        await sock.sendMessage(remoteJid, { text: `❌ Error fetching licenses: ${result.error}` });
+        await replyText(`❌ Error fetching licenses: ${result.error}`);
         return;
       }
 
       if (result.licenses.length === 0) {
-        await sock.sendMessage(remoteJid, { text: '📄 No licenses found in Snipe-IT.' });
+        await replyText('📄 No licenses found in Snipe-IT.');
         return;
       }
 
@@ -2694,15 +2674,13 @@ async function handleCommand(args: {
       });
       lines.push('_Use /getlicense <name_or_id> for detailed information_');
 
-      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      await replyText(lines.join('\n'));
       return;
     }
     case '/getlicense': {
       const identifier = messageContent.trim().split(/\s+/).slice(1).join(' ').trim();
       if (!identifier) {
-        await sock.sendMessage(remoteJid, {
-          text: '❌ Usage: /getlicense <license_name_or_id>\n\nExample: /getlicense "Microsoft Office"',
-        });
+        await replyText('❌ Usage: /getlicense <license_name_or_id>\n\nExample: /getlicense "Microsoft Office"');
         return;
       }
 
@@ -2712,7 +2690,7 @@ async function handleCommand(args: {
         if (result.suggestions && result.suggestions.length > 0) {
           lines.push('', '*Suggestions:*', ...result.suggestions.map((name) => `• ${name}`));
         }
-        await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+        await replyText(lines.join('\n'));
         return;
       }
 
@@ -2741,26 +2719,26 @@ async function handleCommand(args: {
         `*Purchase Cost:* ${purchaseCost}`,
         `*Notes:* ${notes}`,
       ];
-      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      await replyText(lines.join('\n'));
       return;
     }
     case '/expiring': {
       const parts = messageContent.trim().split(/\s+/);
       const daysRaw = parts[1];
       if (daysRaw && !/^\d+$/.test(daysRaw)) {
-        await sock.sendMessage(remoteJid, { text: 'Usage: /expiring [days]\nExample: /expiring 30' });
+        await replyText('Usage: /expiring [days]\nExample: /expiring 30');
         return;
       }
       const days = daysRaw ? Math.max(1, Number(daysRaw)) : 30;
 
       const result = await getExpiringLicenses(days);
       if (!result.success) {
-        await sock.sendMessage(remoteJid, { text: `❌ Error fetching expiring licenses: ${result.error}` });
+        await replyText(`❌ Error fetching expiring licenses: ${result.error}`);
         return;
       }
 
       if (result.licenses.length === 0) {
-        await sock.sendMessage(remoteJid, { text: `✅ No licenses expiring within ${days} days.` });
+        await replyText(`✅ No licenses expiring within ${days} days.`);
         return;
       }
 
@@ -2789,13 +2767,13 @@ async function handleCommand(args: {
         lines.push('');
       });
 
-      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      await replyText(lines.join('\n'));
       return;
     }
     case '/licensereport': {
       const result = await getLicenseUtilization();
       if (!result.success) {
-        await sock.sendMessage(remoteJid, { text: `❌ Error generating license report: ${result.error}` });
+        await replyText(`❌ Error generating license report: ${result.error}`);
         return;
       }
 
@@ -2827,7 +2805,7 @@ async function handleCommand(args: {
       });
 
       lines.push('', `_Generated: ${new Date(result.generatedAt).toLocaleString('en-GB', { timeZone: 'Asia/Jakarta' })}_`);
-      await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+      await replyText(lines.join('\n'));
       return;
     }
     case '/technician': {
@@ -2835,7 +2813,7 @@ async function handleCommand(args: {
       const canUseTechCmd =
         Boolean(requester) && (allowedPhoneNumbers.includes(requester ?? '') || isLapsAdmin(requester ?? '', allowedPhoneNumbers));
       if (!canUseTechCmd) {
-        await sock.sendMessage(remoteJid, { text: 'Access denied.' });
+        await replyText('Access denied.');
         return;
       }
 
@@ -2844,13 +2822,13 @@ async function handleCommand(args: {
       const sub = subRaw ? subRaw.replace(/^\/+/, '') : undefined;
       if (!sub) {
         const helpText = renderCommandHelp('technician');
-        await sock.sendMessage(remoteJid, { text: helpText ?? 'Usage: /technician <command>' });
+        await replyText(helpText ?? 'Usage: /technician <command>');
         return;
       }
 
       const canManageTechnicians = Boolean(requester) && isLapsAdmin(requester ?? '', allowedPhoneNumbers);
       if ((sub === 'add' || sub === 'update' || sub === 'delete' || sub === 'mapleave') && !canManageTechnicians) {
-        await sock.sendMessage(remoteJid, { text: 'Access denied.' });
+        await replyText('Access denied.');
         return;
       }
 
@@ -2858,38 +2836,33 @@ async function handleCommand(args: {
         const contacts = listTechnicianContacts();
         if (contacts.length === 0) {
           const contactsPath = getTechnicianContactsPath();
-          await sock.sendMessage(remoteJid, {
-            text:
-              `No technicians found.\n\n` +
+          await replyText(
+            `No technicians found.\n\n` +
               `Storage: ${contactsPath}\n\n` +
               `Add one:\n` +
-              `/technician add "Name" "ICT Name" "628xxxxxxxxxxx" "email@company.com" "Role" "Gender"`,
-          });
+              `/technician add "Name" "ICT Name" "628xxxxxxxxxxx" "email@company.com" "Role" "Gender"`
+          );
           return;
         }
 
-        await sock.sendMessage(remoteJid, {
-          text: `*Technicians* (${contacts.length})\n\n${renderTechnicianTable(contacts)}`,
-        });
+        await replyText(`*Technicians* (${contacts.length})\n\n${renderTechnicianTable(contacts)}`);
         return;
       }
 
       if (sub === 'search') {
         const query = tokens.slice(2).join(' ').trim();
         if (!query) {
-          await sock.sendMessage(remoteJid, { text: 'Usage: /technician search <query>' });
+          await replyText('Usage: /technician search <query>');
           return;
         }
 
         const results = searchTechnicianContacts(query);
         if (results.length === 0) {
-          await sock.sendMessage(remoteJid, { text: 'No technicians matched your query.' });
+          await replyText('No technicians matched your query.');
           return;
         }
 
-        await sock.sendMessage(remoteJid, {
-          text: `*Technician Search Results*\nQuery: ${query}\nMatches: ${results.length}\n\n${renderTechnicianTable(results)}`,
-        });
+        await replyText(`*Technician Search Results*\nQuery: ${query}\nMatches: ${results.length}\n\n${renderTechnicianTable(results)}`);
         return;
       }
 
@@ -2897,19 +2870,17 @@ async function handleCommand(args: {
         const idRaw = tokens[2];
         const id = idRaw ? Number(idRaw) : NaN;
         if (!Number.isFinite(id)) {
-          await sock.sendMessage(remoteJid, { text: 'Usage: /technician view <id>' });
+          await replyText('Usage: /technician view <id>');
           return;
         }
 
         const contact = getTechnicianContactById(id);
         if (!contact) {
-          await sock.sendMessage(remoteJid, { text: `Technician with id ${id} not found.` });
+          await replyText(`Technician with id ${id} not found.`);
           return;
         }
 
-        await sock.sendMessage(remoteJid, {
-          text: `*Technician Details*\n\n${renderTechnicianDetails(contact)}`,
-        });
+        await replyText(`*Technician Details*\n\n${renderTechnicianDetails(contact)}`);
         return;
       }
 
@@ -2922,9 +2893,7 @@ async function handleCommand(args: {
         const gender = tokens[7];
 
         if (!name || !ictName || !phone || !emailRaw || !technician) {
-          await sock.sendMessage(remoteJid, {
-            text: 'Usage: /technician add "Name" "ICT Name" "Phone" "Email" "Role" "Gender"',
-          });
+          await replyText('Usage: /technician add "Name" "ICT Name" "Phone" "Email" "Role" "Gender"');
           return;
         }
 
@@ -2938,9 +2907,7 @@ async function handleCommand(args: {
           gender: gender ? gender : null,
         });
 
-        await sock.sendMessage(remoteJid, {
-          text: `Technician added.\n\n${renderTechnicianDetails(created)}`,
-        });
+        await replyText(`Technician added.\n\n${renderTechnicianDetails(created)}`);
         return;
       }
 
@@ -2951,21 +2918,19 @@ async function handleCommand(args: {
         const id = idRaw ? Number(idRaw) : NaN;
 
         if (!Number.isFinite(id) || !fieldRaw || !value || !isUpdateField(fieldRaw)) {
-          await sock.sendMessage(remoteJid, {
-            text: 'Usage: /technician update <id> "field" "value" (fields: name, ict_name, leave_schedule_name, phone, email, technician, gender, laps_access)',
-          });
+          await replyText(
+            'Usage: /technician update <id> "field" "value" (fields: name, ict_name, leave_schedule_name, phone, email, technician, gender, laps_access)'
+          );
           return;
         }
 
         const updated = updateTechnicianContact(id, fieldRaw, value);
         if (!updated) {
-          await sock.sendMessage(remoteJid, { text: `Update failed for technician id ${id}.` });
+          await replyText(`Update failed for technician id ${id}.`);
           return;
         }
 
-        await sock.sendMessage(remoteJid, {
-          text: `Technician updated.\n\n${renderTechnicianDetails(updated)}`,
-        });
+        await replyText(`Technician updated.\n\n${renderTechnicianDetails(updated)}`);
         return;
       }
 
@@ -2973,14 +2938,12 @@ async function handleCommand(args: {
         const idRaw = tokens[2];
         const id = idRaw ? Number(idRaw) : NaN;
         if (!Number.isFinite(id)) {
-          await sock.sendMessage(remoteJid, { text: 'Usage: /technician delete <id>' });
+          await replyText('Usage: /technician delete <id>');
           return;
         }
 
         const ok = deleteTechnicianContact(id);
-        await sock.sendMessage(remoteJid, {
-          text: ok ? `Technician id ${id} deleted.` : `Technician id ${id} not found.`,
-        });
+        await replyText(ok ? `Technician id ${id} deleted.` : `Technician id ${id} not found.`);
         return;
       }
 
@@ -3026,16 +2989,16 @@ async function handleCommand(args: {
             }
           }
 
-          await sock.sendMessage(remoteJid, { text: lines.join('\n') });
+          await replyText(lines.join('\n'));
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          await sock.sendMessage(remoteJid, { text: `Map leave failed: ${message}` });
+          await replyText(`Map leave failed: ${message}`);
         }
         return;
       }
 
       const helpText = renderCommandHelp('technician');
-      await sock.sendMessage(remoteJid, { text: helpText ?? 'Unknown technician command.' });
+      await replyText(helpText ?? 'Unknown technician command.');
       return;
     }
     default:
